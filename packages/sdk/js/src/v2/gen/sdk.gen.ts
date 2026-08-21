@@ -175,6 +175,12 @@ import type {
   QuestionReplyErrors,
   QuestionReplyResponses,
   QuestionV2Reply,
+  SecureInputCancelErrors,
+  SecureInputCancelResponses,
+  SecureInputListErrors,
+  SecureInputListResponses,
+  SecureInputSubmitErrors,
+  SecureInputSubmitResponses,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -3356,6 +3362,109 @@ export class Provider extends HeyApiClient {
   private _oauth?: Oauth
   get oauth(): Oauth {
     return (this._oauth ??= new Oauth({ client: this.client }))
+  }
+}
+
+export class SecureInput extends HeyApiClient {
+  /**
+   * List pending secure input requests
+   *
+   * Get all pending secure input (password) requests across all sessions.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SecureInputListResponses, SecureInputListErrors, ThrowOnError>({
+      url: "/secure-input",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Submit secure input
+   *
+   * Submit a password or other secure input for a pending request.
+   */
+  public submit<ThrowOnError extends boolean = false>(
+    parameters: {
+      requestID: string
+      directory?: string
+      workspace?: string
+      input?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "requestID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "input" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SecureInputSubmitResponses, SecureInputSubmitErrors, ThrowOnError>({
+      url: "/secure-input/{requestID}/submit",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Cancel secure input request
+   *
+   * Cancel a pending secure input request.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      requestID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "requestID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SecureInputCancelResponses, SecureInputCancelErrors, ThrowOnError>({
+      url: "/secure-input/{requestID}/cancel",
+      ...options,
+      ...params,
+    })
   }
 }
 
@@ -7190,6 +7299,11 @@ export class OpencodeClient extends HeyApiClient {
   private _provider?: Provider
   get provider(): Provider {
     return (this._provider ??= new Provider({ client: this.client }))
+  }
+
+  private _secureInput?: SecureInput
+  get secureInput(): SecureInput {
+    return (this._secureInput ??= new SecureInput({ client: this.client }))
   }
 
   private _session?: Session2

@@ -65,6 +65,7 @@ import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
+import { SecureInputPrompt } from "./secure-input"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import * as Model from "../../util/model"
 import { formatTranscript } from "../../util/transcript"
@@ -237,8 +238,14 @@ export function Session() {
     if (session()?.parentID) return []
     return children().flatMap((x) => sync.data.question[x.id] ?? [])
   })
-  const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
-  const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+  const secureInputs = createMemo(() => {
+    if (session()?.parentID) return []
+    return children().flatMap((x) => sync.data.secure_input[x.id] ?? [])
+  })
+  const visible = createMemo(
+    () => !session()?.parentID && permissions().length === 0 && questions().length === 0 && secureInputs().length === 0,
+  )
+  const disabled = createMemo(() => permissions().length > 0 || questions().length > 0 || secureInputs().length > 0)
 
   const pending = createMemo(() => {
     const completed = messages().findLastIndex((message) => message.role === "assistant" && message.time.completed)
@@ -1304,6 +1311,12 @@ export function Session() {
                   <QuestionPrompt
                     request={questions()[0]}
                     directory={sync.session.get(questions()[0].sessionID)?.directory}
+                  />
+                </Show>
+                <Show when={permissions().length === 0 && questions().length === 0 && secureInputs().length > 0}>
+                  <SecureInputPrompt
+                    request={secureInputs()[0]}
+                    directory={sync.session.get(secureInputs()[0].sessionID)?.directory}
                   />
                 </Show>
                 <Show when={session()?.parentID}>

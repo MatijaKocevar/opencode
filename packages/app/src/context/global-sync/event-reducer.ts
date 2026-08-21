@@ -6,6 +6,7 @@ import type {
   PermissionRequest,
   Project,
   QuestionRequest,
+  SecureInputRequest,
   Session,
   SessionStatus,
   Todo,
@@ -32,6 +33,9 @@ const SESSION_CONTENT_EVENTS = new Set([
   "question.asked",
   "question.replied",
   "question.rejected",
+  "secure-input.asked",
+  "secure-input.replied",
+  "secure-input.rejected",
 ])
 
 export function applyGlobalEvent(input: {
@@ -90,6 +94,7 @@ export function cleanupDroppedSessionCaches(
     ...Object.keys(store.todo),
     ...Object.keys(store.permission),
     ...Object.keys(store.question),
+    ...Object.keys(store.secure_input),
     ...Object.keys(store.session_status),
     ...Object.values(store.part)
       .map((parts) => parts?.find((part) => !!part?.sessionID)?.sessionID)
@@ -460,6 +465,43 @@ export function applyDirectoryEvent(input: {
       if (!result.found) break
       input.setStore(
         "question",
+        props.sessionID,
+        produce((draft) => {
+          draft.splice(result.index, 1)
+        }),
+      )
+      break
+    }
+    case "secure-input.asked": {
+      const secureInput = event.properties as SecureInputRequest
+      const secureInputs = input.store.secure_input[secureInput.sessionID]
+      if (!secureInputs) {
+        input.setStore("secure_input", secureInput.sessionID, [secureInput])
+        break
+      }
+      const result = Binary.search(secureInputs, secureInput.id, (q) => q.id)
+      if (result.found) {
+        input.setStore("secure_input", secureInput.sessionID, result.index, reconcile(secureInput))
+        break
+      }
+      input.setStore(
+        "secure_input",
+        secureInput.sessionID,
+        produce((draft) => {
+          draft.splice(result.index, 0, secureInput)
+        }),
+      )
+      break
+    }
+    case "secure-input.replied":
+    case "secure-input.rejected": {
+      const props = event.properties as { sessionID: string; requestID: string }
+      const secureInputs = input.store.secure_input[props.sessionID]
+      if (!secureInputs) break
+      const result = Binary.search(secureInputs, props.requestID, (q) => q.id)
+      if (!result.found) break
+      input.setStore(
+        "secure_input",
         props.sessionID,
         produce((draft) => {
           draft.splice(result.index, 1)

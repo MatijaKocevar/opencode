@@ -31,6 +31,7 @@ const tui: TuiPlugin = async (api) => {
   const errored = new Set<string>()
   const questions = new Set<string>()
   const permissions = new Set<string>()
+  const secureInputs = new Set<string>()
 
   api.event.on("question.asked", (event) => {
     if (questions.has(event.properties.id)) return
@@ -44,6 +45,20 @@ const tui: TuiPlugin = async (api) => {
 
   api.event.on("question.rejected", (event) => {
     questions.delete(event.properties.requestID)
+  })
+
+  api.event.on("secure-input.asked", (event) => {
+    if (secureInputs.has(event.properties.id)) return
+    secureInputs.add(event.properties.id)
+    notify(api, event.properties.sessionID, "Password needed", "question")
+  })
+
+  api.event.on("secure-input.replied", (event) => {
+    secureInputs.delete(event.properties.requestID)
+  })
+
+  api.event.on("secure-input.rejected", (event) => {
+    secureInputs.delete(event.properties.requestID)
   })
 
   api.event.on("permission.asked", (event) => {
