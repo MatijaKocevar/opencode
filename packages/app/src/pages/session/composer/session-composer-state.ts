@@ -1,6 +1,6 @@
 import { createEffect, createMemo, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import type { PermissionRequest, QuestionRequest, Todo } from "@opencode-ai/sdk/v2"
+import type { PermissionRequest, QuestionRequest, SecureInputRequest, Todo } from "@opencode-ai/sdk/v2"
 import { useParams } from "@solidjs/router"
 import { showToast } from "@/utils/toast"
 import { useServerSync } from "@/context/server-sync"
@@ -8,7 +8,7 @@ import { useLanguage } from "@/context/language"
 import { usePermission } from "@/context/permission"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
-import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
+import { sessionPermissionRequest, sessionQuestionRequest, sessionSecureInputRequest } from "./session-request-tree"
 
 export const todoState = (input: {
   count: number
@@ -43,10 +43,14 @@ export function createSessionComposerController(options?: { closeMs?: number | (
     })
   })
 
+  const secureInputRequest = createMemo((): SecureInputRequest | undefined => {
+    return sessionSecureInputRequest(sync().data.session, sync().data.secure_input, params.id)
+  })
+
   const blocked = createMemo(() => {
     const id = params.id
     if (!id) return false
-    return !!permissionRequest() || !!questionRequest()
+    return !!permissionRequest() || !!questionRequest() || !!secureInputRequest()
   })
 
   const todos = createMemo((): Todo[] => {
@@ -189,6 +193,7 @@ export function createSessionComposerController(options?: { closeMs?: number | (
     blocked,
     questionRequest,
     permissionRequest,
+    secureInputRequest,
     permissionResponding,
     decide,
     todos,

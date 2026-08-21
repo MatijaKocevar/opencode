@@ -84,6 +84,9 @@ export type Event =
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
+  | EventSecureInputAsked
+  | EventSecureInputReplied
+  | EventSecureInputRejected
   | EventSessionCompacted
   | EventVcsBranchUpdated
   | EventWorkspaceReady
@@ -1537,6 +1540,35 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "secure-input.asked"
+        properties: {
+          id: string
+          sessionID: string
+          /**
+           * Password prompt text detected from command output
+           */
+          prompt: string
+          command?: string
+        }
+      }
+    | {
+        id: string
+        type: "secure-input.replied"
+        properties: {
+          sessionID: string
+          requestID: string
+        }
+      }
+    | {
+        id: string
+        type: "secure-input.rejected"
+        properties: {
+          sessionID: string
+          requestID: string
+        }
+      }
+    | {
+        id: string
         type: "session.compacted"
         properties: {
           sessionID: string
@@ -2543,6 +2575,22 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type SecureInputRequest = {
+  id: string
+  sessionID: string
+  /**
+   * Password prompt text detected from command output
+   */
+  prompt: string
+  command?: string
+}
+
+export type SecureInputNotFoundError = {
+  _tag: "SecureInputNotFoundError"
+  requestID: string
+  message: string
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
@@ -2935,6 +2983,9 @@ export type V2Event =
   | QuestionAsked
   | QuestionReplied2
   | QuestionRejected2
+  | SecureInputAsked
+  | SecureInputReplied
+  | SecureInputRejected
   | SessionCompacted
   | VcsBranchUpdated
   | WorkspaceReady
@@ -5953,6 +6004,65 @@ export type QuestionAsked = {
   }
 }
 
+export type SecureInputAsked = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "secure-input.asked"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    id: string
+    sessionID: string
+    /**
+     * Password prompt text detected from command output
+     */
+    prompt: string
+    command?: string
+  }
+}
+
+export type SecureInputReplied = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "secure-input.replied"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    requestID: string
+  }
+}
+
+export type SecureInputRejected = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "secure-input.rejected"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    requestID: string
+  }
+}
+
 export type SessionCompacted = {
   id: string
   metadata?: {
@@ -6975,6 +7085,38 @@ export type EventQuestionReplied = {
 export type EventQuestionRejected = {
   id: string
   type: "question.rejected"
+  properties: {
+    sessionID: string
+    requestID: string
+  }
+}
+
+export type EventSecureInputAsked = {
+  id: string
+  type: "secure-input.asked"
+  properties: {
+    id: string
+    sessionID: string
+    /**
+     * Password prompt text detected from command output
+     */
+    prompt: string
+    command?: string
+  }
+}
+
+export type EventSecureInputReplied = {
+  id: string
+  type: "secure-input.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+  }
+}
+
+export type EventSecureInputRejected = {
+  id: string
+  type: "secure-input.rejected"
   properties: {
     sessionID: string
     requestID: string
@@ -9438,6 +9580,104 @@ export type ProviderOauthCallbackResponses = {
 }
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
+
+export type SecureInputListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/secure-input"
+}
+
+export type SecureInputListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SecureInputListError = SecureInputListErrors[keyof SecureInputListErrors]
+
+export type SecureInputListResponses = {
+  /**
+   * List of pending secure input requests
+   */
+  200: Array<SecureInputRequest>
+}
+
+export type SecureInputListResponse = SecureInputListResponses[keyof SecureInputListResponses]
+
+export type SecureInputSubmitData = {
+  body?: {
+    input: string
+  }
+  path: {
+    requestID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/secure-input/{requestID}/submit"
+}
+
+export type SecureInputSubmitErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * SecureInputNotFoundError
+   */
+  404: SecureInputNotFoundError
+}
+
+export type SecureInputSubmitError = SecureInputSubmitErrors[keyof SecureInputSubmitErrors]
+
+export type SecureInputSubmitResponses = {
+  /**
+   * Secure input submitted successfully
+   */
+  200: boolean
+}
+
+export type SecureInputSubmitResponse = SecureInputSubmitResponses[keyof SecureInputSubmitResponses]
+
+export type SecureInputCancelData = {
+  body?: never
+  path: {
+    requestID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/secure-input/{requestID}/cancel"
+}
+
+export type SecureInputCancelErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * SecureInputNotFoundError
+   */
+  404: SecureInputNotFoundError
+}
+
+export type SecureInputCancelError = SecureInputCancelErrors[keyof SecureInputCancelErrors]
+
+export type SecureInputCancelResponses = {
+  /**
+   * Secure input cancelled successfully
+   */
+  200: boolean
+}
+
+export type SecureInputCancelResponse = SecureInputCancelResponses[keyof SecureInputCancelResponses]
 
 export type SessionListData = {
   body?: never

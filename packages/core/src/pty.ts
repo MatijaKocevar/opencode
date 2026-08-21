@@ -1,7 +1,7 @@
 export * as Pty from "./pty"
 
 import { makeLocationNode } from "./effect/app-node"
-import type { Disp, Proc } from "#pty"
+import type { Disp, Opts, Proc } from "#pty"
 import { Context, Effect, Layer, Schema, Types } from "effect"
 import { Pty } from "@opencode-ai/schema/pty"
 import { Config } from "./config"
@@ -72,6 +72,11 @@ export type Attachment = {
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Pty.NotFoundError", {
   ptyID: PtyID,
 }) {}
+
+export const spawn = Effect.fn("Pty.spawn")(function* (file: string, args: string[], opts: Opts) {
+  const { spawn } = yield* Effect.promise(() => pty())
+  return yield* Effect.sync(() => spawn(file, args, opts))
+})
 
 export class ExitedError extends Schema.TaggedErrorClass<ExitedError>()("Pty.ExitedError", {
   ptyID: PtyID,

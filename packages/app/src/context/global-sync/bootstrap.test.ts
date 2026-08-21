@@ -61,6 +61,7 @@ function directoryState() {
     todo: {},
     permission: {},
     question: {},
+    secure_input: {},
     mcp_ready: true,
     mcp: {},
     mcp_resource: {},

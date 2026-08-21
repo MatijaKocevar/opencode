@@ -28,6 +28,7 @@ import { Vcs } from "@/project/vcs"
 import { ProviderAuth } from "@/provider/auth"
 import { Provider } from "@/provider/provider"
 import { Question } from "@/question"
+import { SecureInput } from "@/secure-input"
 import { SessionCompaction } from "@/session/compaction"
 import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
@@ -96,6 +97,7 @@ import { projectCopyHandlers } from "./handlers/project-copy"
 import { providerHandlers } from "./handlers/provider"
 import { ptyConnectHandlers, ptyHandlers } from "./handlers/pty"
 import { questionHandlers } from "./handlers/question"
+import { secureInputHandlers } from "./handlers/secure-input"
 import { sessionHandlers } from "./handlers/session"
 import { syncHandlers } from "./handlers/sync"
 import { tuiHandlers } from "./handlers/tui"
@@ -162,6 +164,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     projectCopyHandlers,
     ptyHandlers,
     questionHandlers,
+    secureInputHandlers,
     permissionHandlers,
     providerHandlers,
     sessionHandlers,
@@ -229,6 +232,7 @@ const app = LayerNode.group([
   Skill.node,
   Discovery.node,
   Question.node,
+  SecureInput.node,
   Permission.node,
   PermissionSaved.node,
   Todo.node,

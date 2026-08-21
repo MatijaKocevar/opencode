@@ -8,6 +8,7 @@ import type {
   PermissionRequest,
   QuestionRequest,
   ReferenceInfo,
+  SecureInputRequest,
   Session,
   SessionStatus,
   Todo,
@@ -59,6 +60,9 @@ export type State = {
   }
   question: {
     [sessionID: string]: QuestionRequest[]
+  }
+  secure_input: {
+    [sessionID: string]: SecureInputRequest[]
   }
   mcp_ready: boolean
   mcp: {
