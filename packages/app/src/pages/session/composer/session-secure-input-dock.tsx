@@ -1,42 +1,65 @@
 import { createSignal, Show, type Component } from "solid-js"
+import { produce } from "solid-js/store"
 import { Button } from "@opencode-ai/ui/button"
 import { DockPrompt } from "@opencode-ai/session-ui/dock-prompt"
 import { Icon } from "@opencode-ai/ui/icon"
 import { useLanguage } from "@/context/language"
 import { useSDK } from "@/context/sdk"
+import { useSync } from "@/context/sync"
 import type { SecureInputRequest } from "@opencode-ai/sdk/v2"
 
 export const SessionSecureInputDock: Component<{ request: SecureInputRequest; onSubmit: () => void }> = (props) => {
   const sdk = useSDK()
+  const sync = useSync()
   const language = useLanguage()
   const [value, setValue] = createSignal("")
   const [responding, setResponding] = createSignal(false)
+  let input: HTMLInputElement | undefined
+
+  const clear = () => {
+    setValue("")
+    if (input) input.value = ""
+  }
+
+  const dismiss = () => {
+    sync().set(
+      "secure_input",
+      props.request.sessionID,
+      produce((draft) => {
+        if (!draft) return
+        const index = draft.findIndex((item) => item.id === props.request.id)
+        if (index >= 0) draft.splice(index, 1)
+      }),
+    )
+  }
 
   const submit = async () => {
     if (responding()) return
-    const input = value()
-    if (!input) return
+    const password = value()
+    if (!password) return
+    clear()
     setResponding(true)
     props.onSubmit()
     try {
       await sdk().client.secureInput.submit({
         requestID: props.request.id,
         directory: sdk().directory,
-        input,
+        input: password,
       })
-    } catch {
-      setResponding(false)
+    } finally {
+      dismiss()
     }
   }
 
   const cancel = async () => {
     if (responding()) return
+    clear()
     setResponding(true)
     props.onSubmit()
     try {
       await sdk().client.secureInput.cancel({ requestID: props.request.id, directory: sdk().directory })
-    } catch {
-      setResponding(false)
+    } finally {
+      dismiss()
     }
   }
 
@@ -75,21 +98,25 @@ export const SessionSecureInputDock: Component<{ request: SecureInputRequest; on
           <code class="text-12-regular text-text-base break-all">{props.request.command}</code>
         </div>
       </Show>
-      <form
-        onSubmit={(event) => {
+      <input
+        ref={input}
+        type="password"
+        value={value()}
+        autofocus
+        disabled={responding()}
+        placeholder="Password"
+        autocomplete="off"
+        data-1p-ignore="true"
+        data-lpignore="true"
+        data-bwignore="true"
+        data-form-type="other"
+        onInput={(event) => setValue(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter") return
           event.preventDefault()
           void submit()
         }}
-      >
-        <input
-          type="password"
-          value={value()}
-          autofocus
-          disabled={responding()}
-          placeholder="Password"
-          onInput={(event) => setValue(event.currentTarget.value)}
-        />
-      </form>
+      />
     </DockPrompt>
   )
 }

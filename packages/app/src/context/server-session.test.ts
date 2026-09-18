@@ -1606,6 +1606,18 @@ describe("server session", () => {
     expect(ctx.get).toEqual([])
   })
 
+  test("tracks secure input requests until they are answered", () => {
+    const ctx = setup({})
+    ctx.store.remember(session("root"))
+    const request = { id: "sec_test", sessionID: "root", prompt: "Password:", command: "sudo whoami" }
+
+    ctx.store.apply({ type: "secure-input.asked", properties: request })
+    expect(ctx.store.data.secure_input.root).toEqual([request])
+
+    ctx.store.apply({ type: "secure-input.rejected", properties: { sessionID: "root", requestID: request.id } })
+    expect(ctx.store.data.secure_input.root).toEqual([])
+  })
+
   test("preserves pinned session content under server-wide cache pressure", () => {
     const ctx = setup({})
     ctx.store.pin("active")

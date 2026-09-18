@@ -15,6 +15,7 @@ const sessionFields = new Set([
   "todo",
   "permission",
   "question",
+  "secure_input",
   "message",
   "session_message",
   "part",

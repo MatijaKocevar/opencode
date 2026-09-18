@@ -20,17 +20,11 @@ const PASSWORD_PATTERNS = [
   /\(yes\/no.*\)\?/i,
 ] as const
 
+const COMMAND_START = "(?:^|[;&|(\\n]\\s*|\\$\\(\\s*|`\\s*)"
+
 const INTERACTIVE_COMMANDS = [
-  /^sudo\s/,
-  /\bsudo\s/,
-  /^ssh\b/,
-  /\bssh\b/,
-  /^ansible\b.*-K\b/,
-  /^ansible\b.*--ask-become-pass\b/,
-  /^ansible-playbook\b.*-K\b/,
-  /^ansible-playbook\b.*--ask-become-pass\b/,
-  /^su\s/,
-  /^gpg\s/,
+  new RegExp(`${COMMAND_START}(?:sudo|su|ssh|gpg)\\b`),
+  new RegExp(`${COMMAND_START}ansible(?:-playbook)?\\b[^\\n]*(?:-K\\b|--ask-become-pass\\b)`),
 ] as const
 
 export function isInteractiveCommand(command: string): boolean {
@@ -218,16 +212,29 @@ const layer = Layer.effect(
             let currentEntry: PendingEntry | null = null
             let currentID: SecureInputID | null = null
 
+            const endCurrent = (error: CancelledError | TimedOutError) => {
+              if (!currentEntry || !currentID) return
+              const entry = currentEntry
+              const id = currentID
+              currentEntry = null
+              currentID = null
+              passwordBuffer = ""
+              pending.delete(id)
+              runFork(
+                events.publish(SecureInputSchema.Event.Rejected, {
+                  sessionID: entry.info.sessionID,
+                  requestID: id,
+                }),
+              )
+              entry.reject(error)
+            }
+
             const dataDisp = pty.onData((chunk: string) => {
               output += chunk
 
-              if (currentEntry) {
-                if (currentID) pending.delete(currentID)
-                currentEntry = null
-                currentID = null
-                passwordBuffer = ""
-                return
-              }
+              // Only one request per execution: while it is pending, later output
+              // must not supersede it or drop it without telling clients.
+              if (currentEntry) return
 
               passwordBuffer += chunk
               if (Buffer.byteLength(passwordBuffer, "utf-8") > 4096) {
@@ -245,36 +252,37 @@ const layer = Layer.effect(
                 prompt: promptText,
                 command: input.command,
               }
-              currentEntry = createEntry(info)
-              pending.set(id, currentEntry)
+              const entry = createEntry(info)
+              currentEntry = entry
+              pending.set(id, entry)
               output = output.replace(promptText, "[password supplied]")
               passwordBuffer = ""
 
               runFork(events.publish(SecureInputSchema.Event.Asked, info))
 
-              currentEntry.promise.then((password) => {
-                pty.write(password + "\n")
-              }).catch(() => {
-                pty.kill()
-              })
+              entry.promise
+                .then((password) => {
+                  pty.write(password + "\n")
+                })
+                .catch(() => {
+                  pty.kill()
+                })
+                .finally(() => {
+                  if (currentEntry === entry) currentEntry = null
+                  if (currentID === id) currentID = null
+                })
             })
 
             const exitDisp = pty.onExit((event) => {
               exitCode = event.exitCode
-              if (currentID && currentEntry) {
-                pending.delete(currentID)
-                currentEntry.reject(new CancelledError())
-              }
+              endCurrent(new CancelledError())
               resolve({ output, exitCode })
             })
 
             const timeoutId = setTimeout(() => {
               if (exitCode === null) {
+                endCurrent(new TimedOutError())
                 pty.kill()
-                if (currentID && currentEntry) {
-                  pending.delete(currentID)
-                  currentEntry.reject(new TimedOutError())
-                }
                 resolve({ output, exitCode: null })
               }
             }, timeoutMs)

@@ -1291,6 +1291,38 @@ export function createServerSession(
             if (result.found) draft.splice(result.index, 1)
           }),
         )
+        return
+      }
+      case "secure-input.asked": {
+        const secureInput = event.properties as SecureInputRequest
+        const secureInputs = data.secure_input[secureInput.sessionID]
+        if (!secureInputs) {
+          setData("secure_input", secureInput.sessionID, [secureInput])
+          return
+        }
+        const result = Binary.search(secureInputs, secureInput.id, (item) => item.id)
+        if (result.found) setData("secure_input", secureInput.sessionID, result.index, reconcile(secureInput))
+        if (!result.found)
+          setData(
+            "secure_input",
+            secureInput.sessionID,
+            produce((draft) => void draft.splice(result.index, 0, secureInput)),
+          )
+        return
+      }
+      case "secure-input.replied":
+      case "secure-input.rejected": {
+        const props = event.properties as { sessionID: string; requestID: string }
+        setData(
+          "secure_input",
+          props.sessionID,
+          produce((draft) => {
+            if (!draft) return
+            const result = Binary.search(draft, props.requestID, (item) => item.id)
+            if (result.found) draft.splice(result.index, 1)
+          }),
+        )
+        return
       }
     }
   }

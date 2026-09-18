@@ -1,7 +1,9 @@
 import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { produce } from "solid-js/store"
 import { useKeyboard } from "@opentui/solid"
 import { useTheme } from "../../context/theme"
 import { useSDK } from "../../context/sdk"
+import { useSync } from "../../context/sync"
 import { SplitBorder } from "../../ui/border"
 import { useOpencodeModeStack } from "../../keymap"
 import type { SecureInputRequest } from "@opencode-ai/sdk/v2"
@@ -10,29 +12,46 @@ const SECURE_INPUT_MODE = "secure-input"
 
 export function SecureInputPrompt(props: { request: SecureInputRequest; directory?: string }) {
   const sdk = useSDK()
+  const sync = useSync()
   const { theme } = useTheme()
   const modeStack = useOpencodeModeStack()
 
   const [password, setPassword] = createSignal("")
   const mask = createMemo(() => "•".repeat(password().length))
 
+  function dismiss() {
+    sync.set(
+      "secure_input",
+      props.request.sessionID,
+      produce((draft) => {
+        if (!draft) return
+        const index = draft.findIndex((item) => item.id === props.request.id)
+        if (index >= 0) draft.splice(index, 1)
+      }),
+    )
+  }
+
   function submit() {
     const value = password()
     if (!value) return
     setPassword("")
-    void sdk.client.secureInput.submit({
-      requestID: props.request.id,
-      directory: props.directory,
-      input: value,
-    })
+    void sdk.client.secureInput
+      .submit({
+        requestID: props.request.id,
+        directory: props.directory,
+        input: value,
+      })
+      .then(dismiss, dismiss)
   }
 
   function cancel() {
     setPassword("")
-    void sdk.client.secureInput.cancel({
-      requestID: props.request.id,
-      directory: props.directory,
-    })
+    void sdk.client.secureInput
+      .cancel({
+        requestID: props.request.id,
+        directory: props.directory,
+      })
+      .then(dismiss, dismiss)
   }
 
   onMount(() => {

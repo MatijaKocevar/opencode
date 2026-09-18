@@ -53,6 +53,7 @@ const featureDefinitions = Event.inventory(
   ...FileSystemWatcher.Event.Definitions,
   ...Pty.Event.Definitions,
   ...Question.Event.Definitions,
+  ...SecureInput.Event.Definitions,
 )
 
 export const ServerDefinitions = Event.inventory(
@@ -75,7 +76,6 @@ export const Definitions = Event.inventory(
   ...Project.Event.Definitions,
   ...SessionStatusEvent.Definitions,
   ...QuestionV1.Event.Definitions,
-  ...SecureInput.Event.Definitions,
   ...SessionCompactionEvent.Definitions,
   ...VcsEvent.Definitions,
   ...WorkspaceEvent.Definitions,
