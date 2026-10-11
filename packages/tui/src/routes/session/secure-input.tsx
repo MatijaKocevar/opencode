@@ -1,107 +1,70 @@
-import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
-import { produce } from "solid-js/store"
+import { createMemo, createSignal, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
+import type { SecureInputRequest } from "@opencode/client"
 import { useTheme } from "../../context/theme"
-import { useSDK } from "../../context/sdk"
-import { useSync } from "../../context/sync"
+import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
-import { useOpencodeModeStack } from "../../keymap"
-import type { SecureInputRequest } from "@opencode-ai/sdk/v2"
-
-const SECURE_INPUT_MODE = "secure-input"
+import { Keymap } from "../../context/keymap"
 
 export function SecureInputPrompt(props: { request: SecureInputRequest; directory?: string }) {
-  const sdk = useSDK()
-  const sync = useSync()
-  const { theme } = useTheme()
-  const modeStack = useOpencodeModeStack()
-
+  const data = useData()
+  const theme = useTheme()
   const [password, setPassword] = createSignal("")
   const mask = createMemo(() => "•".repeat(password().length))
-
-  function dismiss() {
-    sync.set(
-      "secure_input",
-      props.request.sessionID,
-      produce((draft) => {
-        if (!draft) return
-        const index = draft.findIndex((item) => item.id === props.request.id)
-        if (index >= 0) draft.splice(index, 1)
-      }),
-    )
-  }
 
   function submit() {
     const value = password()
     if (!value) return
     setPassword("")
-    void sdk.client.secureInput
-      .submit({
-        requestID: props.request.id,
-        directory: props.directory,
-        input: value,
-      })
-      .then(dismiss, dismiss)
+    void data.session.secureInput
+      .submit({ sessionID: props.request.sessionID, requestID: props.request.id, input: value })
+      .catch(() => undefined)
   }
 
   function cancel() {
     setPassword("")
-    void sdk.client.secureInput
-      .cancel({
-        requestID: props.request.id,
-        directory: props.directory,
-      })
-      .then(dismiss, dismiss)
+    void data.session.secureInput
+      .cancel({ sessionID: props.request.sessionID, requestID: props.request.id })
+      .catch(() => undefined)
   }
 
-  onMount(() => {
-    const popMode = modeStack.push(SECURE_INPUT_MODE)
-    onCleanup(popMode)
-  })
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: [
+      { bind: "escape", title: "Cancel password prompt", group: "Secure input", run: cancel },
+      { bind: "return", title: "Submit password", group: "Secure input", run: submit },
+    ],
+  }))
 
   useKeyboard((key) => {
-    if (key.name === "return" || key.name === "kpenter" || key.name === "linefeed") {
-      submit()
-      return
-    }
-    if (key.name === "escape") {
-      cancel()
-      return
-    }
-    if (key.name === "backspace") {
-      setPassword((value) => value.slice(0, -1))
-      return
-    }
+    if (key.name === "return" || key.name === "kpenter" || key.name === "linefeed") return
+    if (key.name === "escape") return
+    if (key.name === "backspace") return setPassword((value) => value.slice(0, -1))
     if (key.ctrl || key.meta || key.super || key.option) return
-    if (key.name === "space") {
-      setPassword((value) => value + " ")
-      return
-    }
+    if (key.name === "space") return setPassword((value) => value + " ")
     if (key.sequence.length === 1) {
       const code = key.sequence.charCodeAt(0)
-      if (code >= 32 && code < 127) {
-        setPassword((value) => value + key.sequence)
-      }
+      if (code >= 32 && code < 127) setPassword((value) => value + key.sequence)
     }
   })
 
   return (
     <box
-      backgroundColor={theme.backgroundPanel}
+      backgroundColor={theme.background.raised.base}
       border={["left"]}
-      borderColor={theme.accent}
+      borderColor={theme.text.feedback.warning.base}
       customBorderChars={SplitBorder.customBorderChars}
     >
       <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
         <box paddingLeft={1} gap={1}>
-          <text fg={theme.secondary}>Password required</text>
-          <text fg={theme.text}>{props.request.prompt}</text>
+          <text fg={theme.text.feedback.warning.base}>Password required</text>
+          <text fg={theme.text.base}>{props.request.prompt}</text>
           <Show when={props.request.command}>
-            <text fg={theme.textMuted}>{props.request.command}</text>
+            <text fg={theme.text.muted}>{props.request.command}</text>
           </Show>
           <box flexDirection="row" gap={1}>
-            <text fg={theme.text}>{mask()}</text>
-            <text fg={theme.primary}>▊</text>
+            <text fg={theme.text.base}>{mask()}</text>
+            <text fg={theme.text.action.primary.base}>▊</text>
           </box>
         </box>
       </box>
@@ -115,11 +78,11 @@ export function SecureInputPrompt(props: { request: SecureInputRequest; director
         justifyContent="space-between"
       >
         <box flexDirection="row" gap={2}>
-          <text fg={theme.text}>
-            enter <span style={{ fg: theme.textMuted }}>submit</span>
+          <text fg={theme.text.base}>
+            enter <span style={{ fg: theme.text.muted }}>submit</span>
           </text>
-          <text fg={theme.text}>
-            esc <span style={{ fg: theme.textMuted }}>cancel</span>
+          <text fg={theme.text.base}>
+            esc <span style={{ fg: theme.text.muted }}>cancel</span>
           </text>
         </box>
       </box>

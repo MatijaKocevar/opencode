@@ -1,14 +1,15 @@
-export * as SecureInput from "./secure-input"
+export * as SecureInput from "./secure-input.js"
 
 import { Schema } from "effect"
-import { optional } from "./schema"
-import { define, inventory } from "./event"
-import { ascending } from "./identifier"
-import { SessionID } from "./session-id"
-import { statics } from "./schema"
+import { optional } from "./schema.js"
+import { ephemeral, inventory } from "./event.js"
+import { ascending } from "./identifier.js"
+import { SessionID } from "./session-id.js"
+import { statics } from "./schema.js"
 
-export const ID = Schema.String.check(Schema.isStartsWith("sec")).pipe(
-  Schema.brand("SecureInputID"),
+export const ID = Schema.String.check(Schema.isStartingWith("sec")).pipe(
+  Schema.brand("SecureInput.ID"),
+  Schema.annotate({ identifier: "SecureInput.ID" }),
   statics((schema) => ({ ascending: (id?: string) => schema.make(id ?? "sec_" + ascending()) })),
 )
 export type ID = typeof ID.Type
@@ -21,15 +22,15 @@ export const Request = Schema.Struct({
 }).annotate({ identifier: "SecureInputRequest" })
 export interface Request extends Schema.Schema.Type<typeof Request> {}
 
-const Asked = define({ type: "secure-input.asked", schema: Request.fields })
-const Replied = define({
+const Asked = ephemeral({ type: "secure-input.asked", schema: Request.fields })
+const Replied = ephemeral({
   type: "secure-input.replied",
   schema: {
     sessionID: SessionID,
     requestID: ID,
   },
 })
-const Rejected = define({
+const Rejected = ephemeral({
   type: "secure-input.rejected",
   schema: {
     sessionID: SessionID,
