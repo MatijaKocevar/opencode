@@ -1,4 +1,4 @@
-import { createMemo, createSignal, Show } from "solid-js"
+import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { SecureInputRequest } from "@opencode/client"
 import { useTheme } from "../../context/theme"
@@ -6,11 +6,16 @@ import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
 import { Keymap } from "../../context/keymap"
 
+const SECURE_INPUT_MODE = "secure-input"
+
 export function SecureInputPrompt(props: { request: SecureInputRequest; directory?: string }) {
   const data = useData()
   const theme = useTheme()
+  const keymap = Keymap.use()
   const [password, setPassword] = createSignal("")
   const mask = createMemo(() => "•".repeat(password().length))
+
+  onMount(() => onCleanup(keymap.mode.push(SECURE_INPUT_MODE)))
 
   function submit() {
     const value = password()
@@ -29,7 +34,7 @@ export function SecureInputPrompt(props: { request: SecureInputRequest; director
   }
 
   Keymap.createLayer(() => ({
-    mode: "modal",
+    mode: SECURE_INPUT_MODE,
     commands: [
       { bind: "escape", title: "Cancel password prompt", group: "Secure input", run: cancel },
       { bind: "return", title: "Submit password", group: "Secure input", run: submit },
