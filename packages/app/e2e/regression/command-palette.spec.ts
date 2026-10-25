@@ -48,6 +48,15 @@ test("lists recent sessions before a query is entered", async ({ page }) => {
   await expect(page.getByRole("heading", { name: paletteSession.title, exact: true })).toBeVisible()
 })
 
+test("reopens from its shortcut as soon as it closes", async ({ page }) => {
+  const { dialog, input } = await openCommandPalette(page)
+  await input.press("Escape")
+  await expect(dialog).toHaveCount(0)
+  // A closed dialog stops blocking shortcuts when it leaves the screen, not when it is disposed afterwards.
+  await page.keyboard.press("ControlOrMeta+Shift+P")
+  await expect(dialog.getByRole("textbox")).toBeFocused()
+})
+
 test("appends search results without resetting the selected command", async ({ page }) => {
   const { dialog, input } = await openCommandPalette(page)
   const files = Promise.withResolvers<void>()
@@ -222,4 +231,20 @@ test("navigation replaces commands without retaining disposed owners", async ({ 
     "true",
   )
   expect(warnings).toEqual([])
+})
+
+test("keeps the same height as the number of results changes", async ({ page }) => {
+  const { dialog, input } = await openCommandPalette(page)
+  const container = page.locator('[data-component="dialog-v2"] [data-slot="dialog-container"]')
+  const height = async () => (await container.boundingBox())?.height
+  const initial = await height()
+  expect(initial).toBe(480)
+
+  await input.fill("copy session")
+  await expect(dialog.getByRole("option")).toHaveCount(1)
+  expect(await height()).toBe(initial)
+
+  await input.fill("zzzz no palette match")
+  await expect(dialog.getByText("No results found")).toBeVisible()
+  expect(await height()).toBe(initial)
 })

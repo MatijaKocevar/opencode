@@ -5,7 +5,7 @@ import { useParams } from "@solidjs/router"
 import { showToast } from "@/shell/notifications/toast"
 import { useServerSDK } from "@/runtime/server/client"
 import { useLanguage } from "@/runtime/i18n/language"
-import { useSettings } from "@/settings/model"
+import { projectSettingsKey, useSettings } from "@/settings/model"
 import { useWorkspaceLocation } from "@/workspaces/location"
 import { sessionPermissionRequest, sessionFormRequest, sessionTreeIDs } from "@/session/requests/session-request-tree"
 import { createWebSearchRequest } from "./websearch"
@@ -42,6 +42,20 @@ export function createSessionRequestModel() {
     return sessionFormRequest(data.session.list(), data.session.form.list, params.id)
   })
 
+  // MCP elicitations are owned by the Location rather than a Session, so they are listed per Location.
+  const location = createMemo(() => {
+    const id = params.id
+
+    return id ? data.session.get(id)?.location : undefined
+  })
+
+  createEffect(() => {
+    const ref = location()
+
+    if (!ref || serverSDK.connection.status() !== "connected") return
+    void data.session.form.sync("global", ref).catch(() => undefined)
+  })
+
   const websearch = createWebSearchRequest({
     owner: () => params.id,
     connected: () => serverSDK.connection.status() === "connected",
@@ -70,10 +84,27 @@ export function createSessionRequestModel() {
     return form?.metadata?.kind === "question" ? form : undefined
   })
 
-  const permissionRequest = createMemo((): PermissionRequest | undefined => {
-    if (settings.permissions.autoApprove()) return undefined
+  const elicitationRequest = createMemo(() => {
+    if (websearch.request() || questionRequest()) return
+    const form = formRequest()
 
-    return sessionPermissionRequest(data.session.list(), data.session.permission.list, params.id)
+    if (form?.metadata?.kind === "mcp-elicitation") return form
+
+    const ref = location()
+
+    if (!ref) return
+
+    return data.session.form.list("global", ref)?.find((item) => item.metadata?.kind === "mcp-elicitation")
+  })
+
+  const permissionRequest = createMemo((): PermissionRequest | undefined => {
+    const id = params.id
+
+    const project = projectSettingsKey(serverSDK.scope, id ? data.session.get(id)?.projectID : undefined)
+
+    if (settings.permissions.autoApproves(project)) return
+
+    return sessionPermissionRequest(data.session.list(), data.session.permission.list, id)
   })
 
   const secureInputRequest = createMemo((): SecureInputRequest | undefined => {
@@ -91,7 +122,13 @@ export function createSessionRequestModel() {
 
     if (!id) return false
 
-    return !!permissionRequest() || !!questionRequest() || !!secureInputRequest() || !!websearch.request()
+    return (
+      !!permissionRequest() ||
+      !!questionRequest() ||
+      !!elicitationRequest() ||
+      !!secureInputRequest() ||
+      !!websearch.request()
+    )
   })
 
   const primary = () => {
@@ -218,6 +255,7 @@ export function createSessionRequestModel() {
   return {
     blocked,
     questionRequest,
+    elicitationRequest,
     websearch,
     permissionRequest,
     permissionResponding,

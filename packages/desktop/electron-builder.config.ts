@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process"
-import { stat } from "node:fs/promises"
+import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import type { CustomMacSignOptions } from "app-builder-lib"
-import type { Configuration } from "electron-builder"
+import { Arch, type Configuration } from "electron-builder"
+import { NativeArch } from "../../script/native-arch"
 import { CLI_BINARIES, getCurrentCli, nodePtyPackage } from "./scripts/utils"
 
 const execFileAsync = promisify(execFile)
@@ -22,6 +23,13 @@ const signScript = path.join(rootDir, "script", "sign-windows.ps1")
 const legacyDesktopEntry = path.join(packageDir, "resources", "linux", "opencode-desktop.desktop")
 
 const legacyDesktopEntryFpm = `${legacyDesktopEntry}=/usr/share/applications/opencode-desktop.desktop`
+
+// rpmbuild adds /usr/lib/.build-id links for every ELF file. The bundled Electron
+// binaries are byte-identical across apps on the same Electron version, so those
+// links collide with other Electron RPMs (Slack, Unity Hub, ...) and rpm/zypper
+// refuse to install or update. They only serve debuginfo lookup, so skip them.
+// fpm only accepts flags before the first src=dest mapping, so keep this first.
+const rpmNoBuildIdLinksFpm = "--rpm-rpmbuild-define=_build_id_links none"
 
 const metainfoFpm = (appId: string) =>
   `${path.join(packageDir, "resources", `${appId}.metainfo.xml`)}=/usr/share/metainfo/${appId}.metainfo.xml`
@@ -67,6 +75,19 @@ const APP_IDS = {
   beta: "ai.opencode.desktop.beta",
   prod: "ai.opencode.desktop",
 } as const
+
+// libappimage (used by AppImageLauncher) resolves the .desktop entry inside an
+// AppImage by globbing `*.desktop` at the squashfs root. If the main
+// executable itself ends in `.desktop` (prod appId `ai.opencode.desktop`), the
+// ELF binary matches the glob and is parsed as a desktop entry, so
+// integration fails with `Malformed desktop entry: Unexpected char '\x7f' at 0`
+// (0x7F is the first byte of the ELF magic).
+// https://github.com/anomalyco/opencode/issues/51867
+// Strip a trailing `.desktop` so the executable can never collide with the
+// desktop-entry glob. Beta/dev appIds end in `.beta`/`.dev` and are unaffected.
+function linuxExecutableName(appId: string): string {
+  return appId.replace(/\.desktop$/, "")
+}
 
 const getBase = (appId: string): Configuration => {
   const target = getCurrentCli()
@@ -116,28 +137,47 @@ const getBase = (appId: string): Configuration => {
       },
     ],
     afterPack: async (context) => {
+      const arch = Arch[context.arch]
+
+      // The --arm64 flag picks Electron while OPENCODE_CLI_TARGET picks the CLI and node-pty, so they can disagree.
+      if (arch !== "x64" && arch !== "arm64") throw new Error(`Unsupported desktop architecture: ${arch}`)
+
+      if (arch !== target.cpu) throw new Error(`Packaging ${arch} Electron with the ${target.target} CLI`)
       const resources = context.packager.getResourcesDir(context.appOutDir)
       const cli = path.join(resources, context.electronPlatformName === "win32" ? "opencode-cli.exe" : "opencode-cli")
 
       const file = await stat(cli)
 
       if (!file.isFile() || file.size === 0) throw new Error(`Bundled CLI must be a non-empty file: ${cli}`)
+      await NativeArch.verify(cli, arch)
       const version = path.join(path.dirname(cli), "opencode-cli.version")
 
       if ((await stat(version)).size === 0) throw new Error(`Bundled CLI version must be a non-empty file: ${version}`)
 
       if (context.electronPlatformName !== "win32") return
 
-      const addon = path.join(
+      const prebuilds = path.join(
         resources,
         "app.asar.unpacked/node_modules",
         nodePtyPackage(target.target),
         "prebuilds",
         `${target.os}-${target.cpu}`,
-        "conpty.node",
       )
 
+      const addon = path.join(prebuilds, "conpty.node")
+
       if ((await stat(addon)).size === 0) throw new Error(`Bundled node-pty must be a non-empty file: ${addon}`)
+      const entries = await readdir(prebuilds, { recursive: true, withFileTypes: true })
+
+      await Promise.all(
+        entries
+          .filter((entry) => entry.isFile())
+          .map(async (entry) => {
+            const file = path.join(entry.parentPath, entry.name)
+
+            if (await NativeArch.isNative(file)) await NativeArch.verify(file, arch)
+          }),
+      )
     },
     mac: {
       category: "public.app-category.developer-tools",
@@ -178,7 +218,11 @@ const getBase = (appId: string): Configuration => {
     linux: {
       icon: `resources/icons`,
       category: "Development",
-      executableName: appId,
+      executableName: linuxExecutableName(appId),
+      // Derive the installed `.desktop` filename from `desktopName`
+      // (`ai.opencode.desktop.desktop` for prod) instead of `executableName`,
+      // so window association is unaffected by the executable rename above.
+      syncDesktopName: true,
       desktop: {
         entry: {
           // Match the installed .desktop file and hicolor icon basename so
@@ -203,7 +247,7 @@ export function getConfig() {
         appId,
         productName: "OpenCode Dev",
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-dev", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-dev", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
     }
 
@@ -219,7 +263,7 @@ export function getConfig() {
           channel: "latest",
         },
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-beta", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-beta", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
     }
 
@@ -235,7 +279,7 @@ export function getConfig() {
           channel: "latest",
         },
         deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
-        rpm: { packageName: "opencode", fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
+        rpm: { packageName: "opencode", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId), legacyDesktopEntryFpm] },
       }
     }
   }

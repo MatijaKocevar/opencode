@@ -82,7 +82,7 @@ export type SessionPreviewProps = {
   draft?: string
   request?:
     | { type: "permission"; value: PermissionRequest }
-    | { type: "question" | "websearch"; value: FormInfo }
+    | { type: "question" | "websearch" | "elicitation"; value: FormInfo }
     | { type: "secure-input"; value: SecureInputRequest }
   reviewOpened?: boolean
   child?: { parentID: string }
@@ -199,6 +199,7 @@ function SessionSurfaceState(props: SessionPreviewProps & { onReset: () => void 
   const region = {
     state: {
       questionRequest: () => (state.request?.type === "question" ? state.request.value : undefined),
+      elicitationRequest: () => (state.request?.type === "elicitation" ? state.request.value : undefined),
       websearch: {
         request: () => (state.request?.type === "websearch" ? state.request.value : undefined),
         options: () => [
