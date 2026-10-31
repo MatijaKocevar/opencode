@@ -52,6 +52,58 @@ export function detectPasswordPrompt(output: string): string | undefined {
   return undefined
 }
 
+/**
+ * Strips a submitted secret from the PTY output stream.
+ *
+ * A child can leave the terminal in echo mode, or print its prompt before it
+ * disables echo (sudo does this when it is started from a script), and then
+ * the tty echoes the secret straight back down the master. Without this the
+ * secret ends up in the captured output, the session transcript and the model
+ * context. Match across chunk boundaries so a split echo is still removed.
+ */
+export class SecretRedactor {
+  private secret = ""
+  private carry = ""
+
+  arm(secret: string) {
+    this.secret = secret
+    this.carry = ""
+  }
+
+  push(chunk: string): string {
+    if (!this.secret) return chunk
+    const secret = this.secret
+    const text = this.carry + chunk
+    this.carry = ""
+
+    let out = ""
+    let index = 0
+    for (;;) {
+      const found = text.indexOf(secret, index)
+      if (found === -1) break
+      out += text.slice(index, found)
+      index = found + secret.length
+    }
+
+    // Hold back a tail that could be the start of an echo split across chunks.
+    const rest = text.slice(index)
+    for (let n = Math.min(secret.length - 1, rest.length); n > 0; n--) {
+      if (secret.startsWith(rest.slice(-n))) {
+        this.carry = rest.slice(-n)
+        return out + rest.slice(0, rest.length - n)
+      }
+    }
+    return out + rest
+  }
+
+  // A held-back tail is by construction a prefix of the secret. Drop it rather
+  // than flush a partial secret when the process exits mid-echo.
+  clear() {
+    this.secret = ""
+    this.carry = ""
+  }
+}
+
 export class CancelledError extends Schema.TaggedError<CancelledError>()("SecureInputCancelledError", {}) {
   override get message() {
     return "The user cancelled the secure input prompt"
@@ -207,6 +259,7 @@ const layer = Layer.effect(
             let output = ""
             let exitCode: number | null = null
             let passwordBuffer = ""
+            const redactor = new SecretRedactor()
             let currentEntry: PendingEntry | null = null
             let currentID: SecureInputID | null = null
 
@@ -228,13 +281,14 @@ const layer = Layer.effect(
             }
 
             const dataDisp = pty.onData((chunk: string) => {
-              output += chunk
+              const visible = redactor.push(chunk)
+              output += visible
 
               // Only one request per execution: while it is pending, later output
               // must not supersede it or drop it without telling clients.
               if (currentEntry) return
 
-              passwordBuffer += chunk
+              passwordBuffer += visible
               if (Buffer.byteLength(passwordBuffer, "utf-8") > 4096) {
                 passwordBuffer = passwordBuffer.slice(-2048)
               }
@@ -260,6 +314,8 @@ const layer = Layer.effect(
 
               entry.promise
                 .then((password) => {
+                  // Arm before writing: the echo can arrive in the same tick.
+                  redactor.arm(password)
                   pty.write(password + "\n")
                 })
                 .catch(() => {
@@ -273,6 +329,7 @@ const layer = Layer.effect(
 
             const exitDisp = pty.onExit((event) => {
               exitCode = event.exitCode
+              redactor.clear()
               endCurrent(new CancelledError())
               resolve({ output, exitCode })
             })
