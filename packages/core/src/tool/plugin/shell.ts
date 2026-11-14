@@ -400,133 +400,133 @@ export const Plugin = {
                 }
               }
               // A foreground timeout of 0 falls back to the default, so a call can't block until the command exits.
-            const foreground = input.timeout || DEFAULT_TIMEOUT_MS
-            const timeout = input.background === true ? (input.timeout ?? 0) : foreground
-            let finalTimeout = timeout
-            // Uninterruptible from spawning to blocking, so an interrupt cannot orphan a started command.
-            return yield* Effect.uninterruptibleMask((restore) =>
-              Effect.gen(function* () {
-                // Listens for the user's stop for the whole call, starting before the command does, so a stop always
-                // reaches this tool through `cancel` instead of interrupting it, even while the command starts.
-                const stopped = yield* Deferred.make<void>()
-                const listener = context.cancel
-                  ? yield* context.cancel.pipe(
-                      Effect.andThen(Deferred.succeed(stopped, undefined)),
-                      Effect.interruptible,
-                      Effect.forkChild({ startImmediately: true }),
-                    )
-                  : undefined
-                return yield* Effect.gen(function* () {
-                  const info = yield* shell.create(
-                    {
-                      command: input.command,
-                      cwd: input.workdir,
-                      timeout,
-                      shell: yield* compatibleShell,
-                      metadata: { sessionID: context.sessionID },
-                      waited: input.background !== true,
-                      toolCall: {
-                        sessionID: context.sessionID,
-                        assistantMessageID: context.messageID,
-                        callID: context.id,
+              const foreground = input.timeout || DEFAULT_TIMEOUT_MS
+              const timeout = input.background === true ? (input.timeout ?? 0) : foreground
+              let finalTimeout = timeout
+              // Uninterruptible from spawning to blocking, so an interrupt cannot orphan a started command.
+              return yield* Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  // Listens for the user's stop for the whole call, starting before the command does, so a stop always
+                  // reaches this tool through `cancel` instead of interrupting it, even while the command starts.
+                  const stopped = yield* Deferred.make<void>()
+                  const listener = context.cancel
+                    ? yield* context.cancel.pipe(
+                        Effect.andThen(Deferred.succeed(stopped, undefined)),
+                        Effect.interruptible,
+                        Effect.forkChild({ startImmediately: true }),
+                      )
+                    : undefined
+                  return yield* Effect.gen(function* () {
+                    const info = yield* shell.create(
+                      {
+                        command: input.command,
+                        cwd: input.workdir,
+                        timeout,
+                        shell: yield* compatibleShell,
+                        metadata: { sessionID: context.sessionID },
+                        waited: input.background !== true,
+                        toolCall: {
+                          sessionID: context.sessionID,
+                          assistantMessageID: context.messageID,
+                          callID: context.id,
+                        },
                       },
-                    },
-                    (invocation) =>
-                      Effect.gen(function* () {
-                        invocation.env.AGENT = "1"
-                        invocation.env.OPENCODE = "1"
-                        invocation.env.AI_AGENT ||= "opencode"
-                        invocation.env.OPENCODE_SESSION_ID = context.sessionID
-                        // Asking for permission can take a while; a stop then ends the call before any command starts.
-                        finalTimeout = yield* restore(
-                          Effect.raceFirst(
-                            prepare(invocation, context),
-                            Deferred.await(stopped).pipe(
-                              Effect.andThen(
-                                Effect.fail(
-                                  new ToolFailure({ message: "Command interrupted by the user before it started." }),
+                      (invocation) =>
+                        Effect.gen(function* () {
+                          invocation.env.AGENT = "1"
+                          invocation.env.OPENCODE = "1"
+                          invocation.env.AI_AGENT ||= "opencode"
+                          invocation.env.OPENCODE_SESSION_ID = context.sessionID
+                          // Asking for permission can take a while; a stop then ends the call before any command starts.
+                          finalTimeout = yield* restore(
+                            Effect.raceFirst(
+                              prepare(invocation, context),
+                              Deferred.await(stopped).pipe(
+                                Effect.andThen(
+                                  Effect.fail(
+                                    new ToolFailure({ message: "Command interrupted by the user before it started." }),
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        )
-                        // A foreground timeout moves the command to the background instead of stopping it.
-                        if (input.background !== true) invocation.timeout = 0
-                      }),
-                  )
-                  yield* context.progress({ shellID: info.id })
+                          )
+                          // A foreground timeout moves the command to the background instead of stopping it.
+                          if (input.background !== true) invocation.timeout = 0
+                        }),
+                    )
+                    yield* context.progress({ shellID: info.id })
 
-                  const { job, settled } = yield* startJob(jobs, shell, {
-                    sessionID: context.sessionID,
-                    info,
-                    timeout: () => finalTimeout,
-                  })
-                  // Stopped while the command was starting: stop it now.
-                  if (yield* Deferred.isDone(stopped)) return yield* cancelled(info, job.id)
+                    const { job, settled } = yield* startJob(jobs, shell, {
+                      sessionID: context.sessionID,
+                      info,
+                      timeout: () => finalTimeout,
+                    })
+                    // Stopped while the command was starting: stop it now.
+                    if (yield* Deferred.isDone(stopped)) return yield* cancelled(info, job.id)
 
-                  if (input.background === true) {
-                    yield* jobs.background(job.id)
-                    yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
-                    return backgroundResult(info, yield* Clock.currentTimeMillis)
-                  }
+                    if (input.background === true) {
+                      yield* jobs.background(job.id)
+                      yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
+                      return backgroundResult(info, yield* Clock.currentTimeMillis)
+                    }
 
-                  const waiting = jobs.block({ id: job.id, sessionID: context.sessionID })
-                  const blocked =
-                    finalTimeout > 0
-                      ? waiting.pipe(
-                          Effect.timeoutOption(finalTimeout),
-                          Effect.flatMap((result) =>
-                            Option.isSome(result)
-                              ? Effect.succeed(result.value)
-                              : jobs
-                                  .background(job.id)
-                                  .pipe(
-                                    Effect.map((info) =>
-                                      info ? { type: "backgrounded" as const, info, timedOut: true } : undefined,
+                    const waiting = jobs.block({ id: job.id, sessionID: context.sessionID })
+                    const blocked =
+                      finalTimeout > 0
+                        ? waiting.pipe(
+                            Effect.timeoutOption(finalTimeout),
+                            Effect.flatMap((result) =>
+                              Option.isSome(result)
+                                ? Effect.succeed(result.value)
+                                : jobs
+                                    .background(job.id)
+                                    .pipe(
+                                      Effect.map((info) =>
+                                        info ? { type: "backgrounded" as const, info, timedOut: true } : undefined,
+                                      ),
                                     ),
-                                  ),
-                          ),
-                        )
-                      : waiting
-                  // A user's stop arrives through `cancel`. Any interrupt stops the command too, unless the server is
-                  // handing its daemon over: then the command and its job keep running, and the next server takes the
-                  // call over and moves the command to the background.
-                  const outcome = yield* restore(
-                    Effect.raceFirst(
-                      blocked.pipe(Effect.map((result) => ({ type: "settled" as const, result }))),
-                      Deferred.await(stopped).pipe(Effect.as({ type: "cancelled" as const })),
-                    ),
-                  ).pipe(
-                    Effect.onInterrupt(() =>
-                      shell.handoffPrepared() ? Effect.void : jobs.cancel(job.id).pipe(Effect.ignore),
-                    ),
-                  )
-                  if (outcome.type === "cancelled") return yield* cancelled(info, job.id)
-                  const result = outcome.result
-                  if (result?.type === "backgrounded") {
-                    yield* shell.timeout(info.id, 0)
-                    const elapsed = "timedOut" in result ? finalTimeout : undefined
-                    finalTimeout = 0
-                    yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
-                    return backgroundResult(info, yield* Clock.currentTimeMillis, elapsed)
-                  }
-                  if (result?.info.status === "error")
-                    return yield* Effect.fail(new Error(result.info.error ?? "Command failed"))
-                  if (result?.info.status === "cancelled") return yield* Effect.fail(new Error("Command cancelled"))
+                            ),
+                          )
+                        : waiting
+                    // A user's stop arrives through `cancel`. Any interrupt stops the command too, unless the server is
+                    // handing its daemon over: then the command and its job keep running, and the next server takes the
+                    // call over and moves the command to the background.
+                    const outcome = yield* restore(
+                      Effect.raceFirst(
+                        blocked.pipe(Effect.map((result) => ({ type: "settled" as const, result }))),
+                        Deferred.await(stopped).pipe(Effect.as({ type: "cancelled" as const })),
+                      ),
+                    ).pipe(
+                      Effect.onInterrupt(() =>
+                        shell.handoffPrepared() ? Effect.void : jobs.cancel(job.id).pipe(Effect.ignore),
+                      ),
+                    )
+                    if (outcome.type === "cancelled") return yield* cancelled(info, job.id)
+                    const result = outcome.result
+                    if (result?.type === "backgrounded") {
+                      yield* shell.timeout(info.id, 0)
+                      const elapsed = "timedOut" in result ? finalTimeout : undefined
+                      finalTimeout = 0
+                      yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
+                      return backgroundResult(info, yield* Clock.currentTimeMillis, elapsed)
+                    }
+                    if (result?.info.status === "error")
+                      return yield* Effect.fail(new Error(result.info.error ?? "Command failed"))
+                    if (result?.info.status === "cancelled") return yield* Effect.fail(new Error("Command cancelled"))
 
-                  return yield* Deferred.await(settled)
-                }).pipe(Effect.ensuring(listener ? Fiber.interrupt(listener) : Effect.void))
-              }),
-            ).pipe(
-              // Shell spans, including the job that waits for a backgrounded command, name the call that started them.
-              Effect.annotateSpans({
-                "gen_ai.tool.call.id": context.id,
-                ...(input.background === true ? { "opencode.shell.background": true } : {}),
-              }),
-              Effect.map((output) => toolResult(output, finalTimeout)),
-              Effect.mapError(toolFailure(`Unable to execute command: ${input.command}`)),
-            )
-          }).pipe(Effect.mapError(toolFailure(`Unable to execute command: ${input.command}`))),
+                    return yield* Deferred.await(settled)
+                  }).pipe(Effect.ensuring(listener ? Fiber.interrupt(listener) : Effect.void))
+                }),
+              ).pipe(
+                // Shell spans, including the job that waits for a backgrounded command, name the call that started them.
+                Effect.annotateSpans({
+                  "gen_ai.tool.call.id": context.id,
+                  ...(input.background === true ? { "opencode.shell.background": true } : {}),
+                }),
+                Effect.map((output) => toolResult(output, finalTimeout)),
+                Effect.mapError(toolFailure(`Unable to execute command: ${input.command}`)),
+              )
+            }).pipe(Effect.mapError(toolFailure(`Unable to execute command: ${input.command}`))),
         }),
       )
       .pipe(Effect.orDie)
