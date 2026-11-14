@@ -13,13 +13,14 @@ import {
   type Accessor,
 } from "solid-js"
 import path from "node:path"
-import { EOL, tmpdir } from "node:os"
+import { EOL } from "node:os"
 import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
 import { createStore } from "solid-js/store"
 import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
-import { useTuiTerminalEnvironment } from "../../context/runtime"
+import { useSessionLinks } from "../../ui/session-link"
+import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
 import { useTheme, useThemes } from "../../context/theme"
@@ -30,18 +31,19 @@ import {
   TextAttributes,
   RGBA,
   MouseEvent,
-  type Renderable,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
-import type {
-  SessionMessageInfo,
-  SessionMessageAssistant,
-  SessionMessageAssistantReasoning,
-  SessionMessageAssistantText,
-  SessionMessageAssistantTool,
-  SessionMessageUser,
-  SessionInfo,
-  ModelInfo,
+import {
+  mediaHashFromUri,
+  type PromptAttachment,
+  type SessionMessageInfo,
+  type SessionMessageAssistant,
+  type SessionMessageAssistantReasoning,
+  type SessionMessageAssistantText,
+  type SessionMessageAssistantTool,
+  type SessionMessageUser,
+  type SessionInfo,
+  type ModelInfo,
 } from "@opencode/client"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
@@ -66,6 +68,7 @@ import { DialogSelect } from "../../ui/dialog-select"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { TodoItem } from "../../component/todo-item"
 import { DialogImagePreview } from "../../component/dialog-image-preview"
+import { createMediaSource } from "../../component/media-source"
 import { statusLabel } from "../../component/dialog-workspace-file-changes"
 import { DialogMessage } from "./dialog-message"
 import { DialogFork } from "./dialog-fork"
@@ -80,8 +83,9 @@ import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
-import { projectedPromptInput } from "../../prompt/codec"
-import { appendPrompt } from "../../prompt/history"
+import { usePromptRestore } from "../../prompt/restore"
+import { appendToSessionPrompt } from "../../component/prompt/draft-stash"
+import type { ProjectedPrompt } from "../../prompt/codec"
 import { deduplicateVisibleImages } from "../../prompt/attachment"
 import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
@@ -158,6 +162,7 @@ export function Session(props: {
 }) {
   const epilogue = useEpilogue()
   const clipboard = useClipboard()
+  const paths = useTuiPaths()
   const writeExport = async (file: string, content: string) => {
     await mkdir(path.dirname(file), { recursive: true })
     await writeFile(file, content)
@@ -269,6 +274,7 @@ export function Session(props: {
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
   const toast = useToast()
+  const restorePrompt = usePromptRestore()
   const client = useClient()
   const autoApproved = new Set<string>()
   createEffect(() => {
@@ -295,6 +301,8 @@ export function Session(props: {
     (id) => {
       if (id === sessionID) setRowsSynced(true)
     },
+    // A scroll-triggered history load joins this boundary load instead of publishing its own page.
+    () => pinAbove(),
   )
   const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
   const anchors = createTimelineAnchors()
@@ -395,7 +403,6 @@ export function Session(props: {
     firstJump()?.()
     if (!scroll || scroll.isDestroyed) return
     scroll.verticalScrollBar.off("change", updateAwayFromBottom)
-    scroll.content.off("resize", holdAnchor)
     saveScrollAnchor(true)
   })
   const [prompt, setPrompt] = createSignal<PromptRef>()
@@ -407,24 +414,21 @@ export function Session(props: {
     r.set(route.prompt)
   }
 
-  /** Runs after layout has settled (two frames), unless the transcript was torn down. */
+  /** Runs after the next frame's layout and before it paints, unless the transcript was torn down. */
   const afterLayout = (continuation: () => void) => {
-    renderer.requestAnimationFrame(() => {
-      renderer.requestAnimationFrame(() => {
-        if (!scroll || scroll.isDestroyed) return
-        continuation()
-      })
+    if (!scroll || scroll.isDestroyed) return
+    scroll.afterLayout(() => {
+      if (!scroll.isDestroyed) continuation()
     })
   }
 
-  // Keeps a toggled disclosure's header on its viewport row. The content resize fires inside the
-  // layout pass, before rows take their screen positions, so the correction lands in the same frame.
-  // Renderable positions are still stale at that point; read the computed layout instead.
-  let held: { node: Renderable; top: number } | undefined
-  const layoutTop = (node: Renderable): number =>
-    node === scroll.content || !node.parent ? 0 : node.getComputedLayout().top + layoutTop(node.parent)
-  const holdAnchor = () => {
-    if (held && !held.node.isDestroyed) scroll.scrollTo(layoutTop(held.node) - held.top)
+  // Pin an existing row before publication. Total height also counts streamed output below the
+  // reader, which must not move their viewport when it arrives alongside the older rows.
+  const pinAbove = () => {
+    if (!scroll || scroll.isDestroyed) return
+    if (scroll.stickyScroll && scroll.scrollTop >= scroll.scrollHeight - scroll.viewport.height) return
+    const node = scroll.getChildren().find((node) => node.height > 0 && node.y + node.height > scroll.viewport.y)
+    if (node) afterLayout(scroll.anchor(node))
   }
 
   // Tail-first transcript mounting: only the newest rows mount when the session opens. Older rows
@@ -449,16 +453,18 @@ export function Session(props: {
     sessionID: () => route.sessionID,
     more: (id) => data.session.message.more(id),
     loadMore: async (id) => {
-      await data.session.message.loadMore(id)
+      const beforePublish = () => {
+        if (route.sessionID === id) pinAbove()
+      }
+      await data.session.message.loadMore(id, { beforePublish })
       await completeGroupBoundary({
         rows,
         messages: () => data.session.message.list(id).length,
         more: () => data.session.message.more(id),
-        loadMore: () => data.session.message.loadMore(id),
+        loadMore: () => data.session.message.loadMore(id, { beforePublish }),
         active: () => route.sessionID === id,
       })
     },
-    height: () => scroll.scrollHeight,
     afterLayout,
     active: (id) => route.sessionID === id && Boolean(scroll && !scroll.isDestroyed),
     scrollBy: (amount) => {
@@ -472,11 +478,11 @@ export function Session(props: {
     if (revealingOlderRows || !scroll || scroll.isDestroyed || scroll.scrollTop > scroll.viewport.height) return false
     if (current === 0) return prependHistory(scrollBy)
     revealingOlderRows = true
-    const before = scroll.scrollHeight
     scroll.stickyScroll = false
+    pinAbove()
     setHiddenRows(rowsBefore(weights(), current, TRANSCRIPT_BACKFILL_CHUNK))
     afterLayout(() => {
-      scroll.scrollBy(scroll.scrollHeight - before + scrollBy)
+      scroll.scrollBy(scrollBy)
       scroll.stickyScroll = !navigationMessage()
       revealingOlderRows = false
     })
@@ -647,39 +653,49 @@ export function Session(props: {
     "go-upsell",
     { initial: {} },
   )
-  const handledFreeLimits = new Set<string>()
+  const handledLimits = new Set<string>()
   useUsageAlerts(() => route.sessionID)
   let sessionDisposed = false
   onCleanup(() => {
     sessionDisposed = true
   })
-  // Restore the prompt when the free allowance stops it, and offer OpenCode Go on the first hit in a day.
+  // Restore the prompt when the free allowance or an OpenCode Go limit stops it, and offer OpenCode Go on the first free
+  // allowance hit in a day.
   onCleanup(
-    data.on("session.step.failed", (event) => {
-      if (event.data.sessionID !== route.sessionID || event.data.error.type !== "provider.free-limit") return
-      if (handledFreeLimits.has(event.data.assistantMessageID)) return
-      handledFreeLimits.add(event.data.assistantMessageID)
-      const current = prompt()
-      const wasEmpty = Boolean(
-        current &&
-          !current.current.text.trim() &&
-          !current.current.files?.length &&
-          !current.current.agents?.length &&
-          !current.current.skills?.length &&
-          !current.current.pasted.length,
-      )
-      if (!wasEmpty || !current) return
+    data.on("session.step.failed", async (event) => {
+      const type = event.data.error.type
+      if (event.data.sessionID !== route.sessionID) return
+      if (type !== "provider.free-limit" && type !== "provider.go-limit") return
+      if (handledLimits.has(event.data.assistantMessageID)) return
+      handledLimits.add(event.data.assistantMessageID)
+      const empty = (ref: PromptRef | undefined): ref is PromptRef =>
+        !!ref &&
+        !ref.current.text.trim() &&
+        !ref.current.files?.length &&
+        !ref.current.agents?.length &&
+        !ref.current.skills?.length &&
+        !ref.current.pasted.length
+      if (!empty(prompt())) return
       const list = messages()
       const end = list.findIndex((item) => item.id === event.data.assistantMessageID)
-      for (let i = end - 1; i >= 0; i--) {
+      let recalled: SessionMessageUser | undefined
+      for (let i = end - 1; i >= 0 && !recalled; i--) {
         const item = list[i]
         if (!item || item.type === "shell" || item.type === "idle") break
-        if (item.type === "user" && !data.session.input.has(route.sessionID, item.id)) {
-          current.set({ ...projectedPromptInput(item), pasted: [] })
-          break
-        }
+        if (item.type === "user" && !data.session.input.has(route.sessionID, item.id)) recalled = item
       }
-      if (dialog.stack.length > 0) return
+      const restored = recalled
+        ? await restorePrompt(recalled).catch((error) => {
+            toast.show({ message: errorMessage(error), variant: "error", duration: 5000 })
+            return null
+          })
+        : undefined
+      // Media refs load before the prompt comes back; typing or a shell command meanwhile keeps it and skips the offer.
+      if (restored === null || sessionDisposed || route.sessionID !== event.data.sessionID) return
+      const current = prompt()
+      if (!empty(current) || current.mode !== "normal") return
+      if (restored) current.set(restored)
+      if (type === "provider.go-limit" || dialog.stack.length > 0) return
       if (goUpsell.dontShow || goUpsellMemory.dontShow) return
       const now = Date.now()
       const seen = Math.max(goUpsell.lastSeenAt ?? 0, goUpsellMemory.lastSeenAt ?? 0)
@@ -758,25 +774,33 @@ export function Session(props: {
     }),
   )
   const runPendingAction = createSingleFlight<string>()
-  const mutatePending = async (action: PendingAction, inboxID: string, failureLabel?: string) => {
-    const result = await runPendingAction(inboxID, async () => {
-      const request =
-        action === "steer"
-          ? client.api.session.inbox.update({ sessionID: route.sessionID, inboxID, delivery: "steer" })
-          : action === "queue"
-            ? client.api.session.inbox.update({ sessionID: route.sessionID, inboxID, delivery: "queue" })
-            : client.api.session.inbox.cancel({ sessionID: route.sessionID, inboxID })
-      const error = await request.then(
-        () => undefined,
-        (error) => error,
-      )
-      if (!error) return true
-      const label = failureLabel ?? (action === "cancel" ? "delete" : action)
-      toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
-      return false
-    })
-    return result ?? false
+  // Uses the captured sessionID: after an await, route.sessionID may already name another tab, or none.
+  const requestPending = async (action: PendingAction, inboxID: string, failureLabel?: string) => {
+    const request =
+      action === "steer"
+        ? client.api.session.inbox.update({ sessionID, inboxID, delivery: "steer" })
+        : action === "queue"
+          ? client.api.session.inbox.update({ sessionID, inboxID, delivery: "queue" })
+          : client.api.session.inbox.cancel({ sessionID, inboxID })
+    const error = await request.then(
+      () => undefined,
+      (error) => error,
+    )
+    if (!error) return true
+    const label = failureLabel ?? (action === "cancel" ? "delete" : action)
+    toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
+    return false
   }
+  const mutatePending = async (action: PendingAction, inboxID: string) =>
+    (await runPendingAction(inboxID, () => requestPending(action, inboxID))) ?? false
+  // The cancel releases blobs nothing else references, so media refs load into the draft first. Resolves with the
+  // composer it wrote to, if any, once the prompt is back; undefined if the cancel failed or was already running.
+  const undoPending = (inboxID: string, message: ProjectedPrompt, failureLabel?: string) =>
+    runPendingAction(inboxID, async () => {
+      const restored = await restorePrompt(message)
+      if (!(await requestPending("cancel", inboxID, failureLabel))) return
+      return { composer: appendToSessionPrompt(sessionID, restored, renderer.widthMethod) }
+    })
   const openQueuedPrompts = () =>
     dialog.replace(() => (
       <DialogSelect
@@ -815,19 +839,19 @@ export function Session(props: {
                 toast.show({ message: "Leave shell mode before undoing a queued prompt", variant: "error" })
                 return
               }
-              void mutatePending("cancel", queued.id, "undo").then((undone) => {
-                if (!undone) return
-                target.setMode("normal")
-                target.set(
-                  appendPrompt(
-                    target.current,
-                    { ...projectedPromptInput(queued.payload), pasted: [] },
-                    renderer.widthMethod,
-                  ),
+              void undoPending(queued.id, queued.payload, "undo")
+                .then((undone) => {
+                  if (!undone || sessionDisposed) return
+                  dialog.clear()
+                  undone.composer?.focus()
+                })
+                .catch((error) =>
+                  toast.show({
+                    title: "Failed to undo pending prompt",
+                    message: errorMessage(error),
+                    variant: "error",
+                  }),
                 )
-                dialog.clear()
-                target.focus()
-              })
             },
           },
         ]}
@@ -1064,13 +1088,7 @@ export function Session(props: {
       group: "Session",
       slash: { name: "timeline" },
       run: () => {
-        dialog.replace(() => (
-          <DialogTimeline
-            sessionID={route.sessionID}
-            onMove={jumpToMessage}
-            setPrompt={(value) => promptRef.current?.set(value)}
-          />
-        ))
+        dialog.replace(() => <DialogTimeline sessionID={route.sessionID} onMove={jumpToMessage} />)
       },
     },
     {
@@ -1128,21 +1146,16 @@ export function Session(props: {
           dialog.clear()
           return
         }
-        const sessionID = route.sessionID
-        const target = prompt()
-        void (async () => {
-          if (pendingDeliveries().has(message.id)) {
-            if (!(await mutatePending("cancel", message.id))) return
-          } else {
-            await client.api.session.interrupt({ sessionID })
-            await client.api.experimental.session.wait({ sessionID })
-            await client.api.session.revert.stage({ sessionID, messageID: message.id })
-          }
-          target?.set({
-            ...projectedPromptInput(message),
-            pasted: [],
-          })
-        })().catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
+        const undo = pendingDeliveries().has(message.id)
+          ? undoPending(message.id, message)
+          : (async () => {
+              const restored = await restorePrompt(message)
+              await client.api.session.interrupt({ sessionID })
+              await client.api.experimental.session.wait({ sessionID })
+              await client.api.session.revert.stage({ sessionID, messageID: message.id })
+              appendToSessionPrompt(sessionID, restored, renderer.widthMethod)
+            })()
+        void undo.catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
         dialog.clear()
       },
     },
@@ -1378,7 +1391,7 @@ export function Session(props: {
           }
 
           const filepath = path.join(
-            tmpdir(),
+            paths.cwd,
             `session-${crypto.randomUUID()}.${options.format === "markdown" ? "md" : "json"}`,
           )
           await writeExport(filepath, content)
@@ -1403,8 +1416,9 @@ export function Session(props: {
       title: "Toggle subagent picker",
       id: "session.child.first",
       group: "Session",
-      run: () => {
-        if (composer.open || session()?.parentID) setComposer("open", false)
+      run: (tab?: string) => {
+        if (tab === "shell" || tab === "subagents") setComposer({ open: true, tab })
+        else if (composer.open || session()?.parentID) setComposer("open", false)
         else setComposer({ open: true, tab: "subagents" })
         dialog.clear()
       },
@@ -1453,6 +1467,7 @@ export function Session(props: {
   }))
 
   Keymap.createLayer(() => ({
+    mode: "composer",
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: baseAndUnfocusedCommands.map((command) => command.id),
   }))
@@ -1485,13 +1500,8 @@ export function Session(props: {
           // A group that ends the transcript would open off screen while the reader follows the bottom.
           const last = rows.findLast((row) => row.type !== "assistant-footer" && row.type !== "turn-usage")
           const ending = last?.type === "group" && groupID(last, 0) === id
-          if (anchor && !(ending && !isAwayFromBottom())) {
-            const hold = { node: anchor, top: layoutTop(anchor) - scroll.scrollTop }
-            held = hold
-            afterLayout(() => {
-              if (held === hold) held = undefined
-            })
-          }
+          // Keeps the toggled disclosure's header on its viewport row through the next layout.
+          if (anchor && !(ending && !isAwayFromBottom())) afterLayout(scroll.anchor(anchor))
           sessionTabs.setGroupExpanded(sessionID, id, expanded)
           afterLayout(saveScrollAnchor)
         },
@@ -1534,7 +1544,6 @@ export function Session(props: {
                   scroll = r
                   props.scrollRef?.(r)
                   scroll.verticalScrollBar.on("change", updateAwayFromBottom)
-                  scroll.content.on("resize", holdAnchor)
                 }}
                 viewportOptions={{
                   paddingRight: showScrollbar() ? 1 : 0,
@@ -1667,7 +1676,7 @@ export function Session(props: {
                     ref={bind}
                     muted={props.promptMuted}
                     onSubmit={() => {
-                      toBottom()
+                      if (config.session?.submit_scroll !== "keep") toBottom()
                     }}
                     onEmptySubmit={async () => {
                       const next = queuedPrompts()[0]
@@ -1923,8 +1932,7 @@ function BackgroundToolHint(props: { messages: SessionMessageInfo[] }) {
     )
     const part = current?.content.find((part): part is SessionMessageAssistantTool => {
       if (part.type !== "tool" || part.state.status !== "running") return false
-      const name = canonicalToolName(part.name)
-      return name === "shell" || name === "subagent"
+      return canonicalToolName(part.name) === "shell"
     })
     if (!current || !part) return
     return { key: `${current.id}:${part.id}`, started: part.time.ran ?? part.time.created }
@@ -2239,6 +2247,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
       <Show when={content()}>
         <box paddingTop={1} paddingLeft={3}>
           <markdown
+            ref={useSessionLinks()}
             syntaxStyle={syntax()}
             renderNode={plugins.markdown()}
             streaming={true}
@@ -2310,6 +2319,7 @@ function RevertMessage(props: {
         paddingTop={1}
         paddingBottom={1}
         paddingLeft={2}
+        paddingRight={2}
         backgroundColor={hover() ? theme.decrease(theme.background.raised.base) : theme.background.raised.base}
       >
         <text fg={theme.text.muted}>
@@ -2326,7 +2336,7 @@ function RevertMessage(props: {
                     maxWidth={Math.max(
                       2,
                       ctx.width -
-                        5 -
+                        7 -
                         (file.additions > 0 ? stringWidth(`+${file.additions}`) + 1 : 0) -
                         (file.deletions > 0 ? stringWidth(`-${file.deletions}`) + 1 : 0),
                     )}
@@ -2375,11 +2385,14 @@ function UserMessage(props: { message: SessionMessageUser }) {
   const newDesigns = useNewDesigns()
   const data = useData()
   const local = useLocal()
-  const files = createMemo(() => deduplicateVisibleImages(props.message.files ?? []))
+  // Opted-in reads leave stored files as `media:` refs, a PromptAttachment variant the generated message type omits.
+  const files = createMemo(() => deduplicateVisibleImages<PromptAttachment>(props.message.files ?? []))
   const skills = createMemo(() => props.message.skills ?? [])
   const images = createMemo(() =>
     files().flatMap((file) =>
-      file.mime.startsWith("image/") ? [{ uri: `data:${file.mime};base64,${file.data}` }] : [],
+      file.mime.startsWith("image/")
+        ? [{ uri: "uri" in file ? file.uri : `data:${file.mime};base64,${file.data}` }]
+        : [],
     ),
   )
   const themes = useThemes()
@@ -2390,7 +2403,6 @@ function UserMessage(props: { message: SessionMessageUser }) {
   const delivery = createMemo(() => ctx.pendingDelivery(props.message.id))
   const dialog = useDialog()
   const renderer = useRenderer()
-  const promptRef = usePromptRef()
 
   const updatePendingSteer = async (action: "queue" | "cancel") => {
     if (await ctx.mutatePending(action, props.message.id)) dialog.clear()
@@ -2432,17 +2444,12 @@ function UserMessage(props: { message: SessionMessageUser }) {
             }
             // The dialog outlives this row, whose props go stale when a resync drops the message.
             const messageID = props.message.id
-            dialog.replace(() => (
-              <DialogMessage
-                messageID={messageID}
-                sessionID={ctx.sessionID}
-                setPrompt={(value) => promptRef.current?.set(value)}
-              />
-            ))
+            dialog.replace(() => <DialogMessage messageID={messageID} sessionID={ctx.sessionID} />)
           }}
           paddingTop={1}
           paddingBottom={1}
           paddingLeft={2}
+          paddingRight={2}
           backgroundColor={hover() ? theme.decrease(theme.background.raised.base) : theme.background.raised.base}
           flexShrink={0}
         >
@@ -2521,7 +2528,7 @@ function QueuedPromptDock(props: { prompts: { id: string; text: string }[]; onOp
         paddingTop={1}
         paddingBottom={1}
         paddingLeft={2}
-        paddingRight={1}
+        paddingRight={2}
         backgroundColor={hover() ? theme.decrease(theme.background.raised.base) : theme.background.raised.base}
         flexDirection="row"
       >
@@ -2696,7 +2703,7 @@ function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?
       >
         <For each={visible()}>
           {(image, index) => {
-            const [failed, setFailed] = createSignal(false)
+            const media = createMediaSource(() => image.uri)
             return (
               <box
                 width={height() * 2}
@@ -2711,14 +2718,14 @@ function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?
                   dialog.replace(() => <DialogImagePreview images={images()} initial={index()} />)
                 }}
               >
-                <Show when={!failed()} fallback={<text>No preview</text>}>
+                <Show when={!media.failed()} fallback={<text>No preview</text>}>
                   <image
-                    source={image.uri}
+                    source={media.source()}
                     fit="cover"
                     protocol="auto"
                     width="100%"
                     height="100%"
-                    onError={() => setFailed(true)}
+                    onError={media.onError}
                   />
                 </Show>
               </box>
@@ -2739,7 +2746,10 @@ function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?
 
 function inlineToolImages(part: SessionMessageAssistantTool) {
   return toolDisplayContent(part.state).flatMap((content) =>
-    content.type === "file" && content.mime.startsWith("image/") && content.uri.startsWith("data:image/")
+    content.type === "file" &&
+    content.mime.startsWith("image/") &&
+    // An emptied `data:` URI is a payload the store dropped while previews were off.
+    ((content.uri.startsWith("data:image/") && !content.uri.endsWith(",")) || mediaHashFromUri(content.uri))
       ? [{ uri: content.uri }]
       : [],
   )
@@ -2931,6 +2941,7 @@ function BlockTool(props: BlockToolProps) {
       paddingTop={1}
       paddingBottom={1}
       paddingLeft={2}
+      paddingRight={2}
       gap={1}
       backgroundColor={hover() ? theme.decrease(background()) : background()}
       customBorderChars={SplitBorder.customBorderChars}
@@ -2984,7 +2995,7 @@ function BlockTool(props: BlockToolProps) {
             </Show>
             <FilePath
               value={path().value}
-              maxWidth={Math.max(2, ctx.width - 4 - stringWidth(path().label) - (props.spinner ? 2 : 0))}
+              maxWidth={Math.max(2, ctx.width - 6 - stringWidth(path().label) - (props.spinner ? 2 : 0))}
               fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
             />
           </box>
@@ -3001,6 +3012,7 @@ function BlockTool(props: BlockToolProps) {
 const SHELL_DISPLAY_LIMIT = 1024 * 1024
 
 function Shell(props: ToolProps) {
+  const stopped = createMemo(() => stoppedShell(props.part, props.metadata))
   return (
     <ShellDisplay
       part={props.part}
@@ -3009,9 +3021,20 @@ function Shell(props: ToolProps) {
       workdir={stringValue(props.input.workdir)}
       status={props.part.state.status}
       background={props.part.state.status === "completed" && props.metadata.status === "running"}
-      output={stringValue(props.metadata.shellID) ? undefined : props.output}
+      output={stopped()?.output ?? (stringValue(props.metadata.shellID) ? undefined : props.output)}
+      error={stopped()?.notice}
     />
   )
+}
+
+// A call the user stopped fails with its output followed by a notice, which its metadata names. Its output shows like
+// a finished call's and only the notice as the error. A plugin that rewrote the error gets it shown as is.
+function stoppedShell(part: SessionMessageAssistantTool, metadata: Record<string, unknown>) {
+  if (part.state.status !== "error" || metadata.interrupted !== true) return
+  const notice = stringValue(metadata.notice)
+  const message = part.state.error.message
+  if (!notice || !message.endsWith(notice)) return
+  return { output: message.slice(0, -notice.length).replace(/\n+$/, ""), notice }
 }
 
 function ShellDisplay(props: {
@@ -3111,7 +3134,7 @@ function ShellDisplay(props: {
     return stripAnsi(props.output?.trim() ?? "")
   })
   const maxLines = 10
-  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6 - (isRunning() ? 2 : 0)))
+  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 8 - (isRunning() ? 2 : 0)))
   const prefix = createMemo(() => (workdir() && workdir() !== "." ? `cd ${workdir()} && ` : ""))
   const input = createMemo(() => (props.command ? `${isRunning() ? "" : "$ "}${prefix()}${props.command}` : ""))
   const collapsed = createMemo(() => collapseShellOutput(input(), output(), maxLines, maxChars()))
@@ -3337,11 +3360,6 @@ function Subagent(props: ToolProps) {
         const id = sessionID()
         if (id) navigate({ type: "session", sessionID: id })
       }}
-      status={
-        isBackgroundSubagent(props.metadata, props.part.state.status) ? (
-          <StatusBadge>Background</StatusBadge>
-        ) : undefined
-      }
     >
       {`${continuation() ? "Continue subagent" : `${Locale.titlecase(stringValue(props.input.agent) ?? stringValue(props.input.subagent_type) ?? "General")} Subagent`} — ${description() ?? "Subagent"}${model() ? ` · ${model()}` : ""}`}
     </InlineTool>
@@ -3359,13 +3377,6 @@ export function subagentModelLabel(
   const modelID = separator === -1 ? reference : reference.slice(separator + 1)
   const name = models?.find((item) => item.providerID === providerID && item.id === modelID)?.name
   return `${name ?? reference}${variant ? ` (${variant})` : ""}`
-}
-
-export function isBackgroundSubagent(
-  metadata: Record<string, unknown>,
-  status: SessionMessageAssistantTool["state"]["status"],
-) {
-  return status === "completed" && metadata.status === "running"
 }
 
 export { executeCallSummary }
@@ -3492,7 +3503,7 @@ function Edit(props: ToolProps) {
       <Match when={file()}>
         {(item) => (
           <BlockTool path={{ label: "← Edit", value: pathFormatter.format(path()) }} part={props.part}>
-            <box paddingLeft={1}>
+            <box paddingLeft={1} paddingRight={1}>
               <PatchDiff
                 diff={item().patch}
                 hunkFg={theme.diff.text.hunkHeader}
@@ -3582,7 +3593,7 @@ function ApplyPatch(props: ToolProps) {
                     </text>
                   }
                 >
-                  <box paddingLeft={1}>
+                  <box paddingLeft={1} paddingRight={1}>
                     <PatchDiff
                       diff={file.patch}
                       hunkFg={theme.diff.text.hunkHeader}
@@ -3623,7 +3634,7 @@ function ApplyPatch(props: ToolProps) {
               >
                 <FilePath
                   value={file.resource}
-                  maxWidth={Math.max(2, ctx.width - 3)}
+                  maxWidth={Math.max(2, ctx.width - 5)}
                   fg={file.type === "delete" ? theme.diff.text.removed : theme.text.muted}
                 />
               </BlockTool>

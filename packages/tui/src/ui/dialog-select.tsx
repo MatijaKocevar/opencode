@@ -20,7 +20,7 @@ import {
 } from "./dialog"
 import { Locale } from "../util/locale"
 import { getScrollAcceleration } from "../util/scroll"
-import { useConfig, useNewDesigns } from "../config"
+import { useConfig, useCursorStyle, useNewDesigns } from "../config"
 import { moveSelection, reconcileSelection } from "./select-controller"
 
 export interface DialogSelectProps<T> {
@@ -143,6 +143,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   const dialog = useDialog()
   const theme = useTheme().surface("dialog")
   const config = useConfig().data
+  const cursorStyle = useCursorStyle()
   const newDesigns = useNewDesigns()
   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
   const renderer = useRenderer()
@@ -653,6 +654,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
   const searchInTitle = () => newDesigns() && props.searchInTitle === true && props.renderFilter !== false
 
+  const searchCursorColor = () => (newDesigns() ? theme.text.base : theme.text.formfield.focused)
+
   const searchInput = () => (
     <input
       flexGrow={1}
@@ -664,8 +667,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         })
       }}
       focusedBackgroundColor={theme.background.formfield.focused}
-      cursorColor={newDesigns() ? theme.text.base : theme.text.formfield.focused}
-      cursorStyle={config.cursor}
+      cursorColor={searchCursorColor()}
+      cursorStyle={cursorStyle()}
       focusedTextColor={newDesigns() ? theme.text.formfield.base : theme.text.formfield.focused}
       ref={(r) => {
         input = r

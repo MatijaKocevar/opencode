@@ -1,5 +1,5 @@
 [data-component="dock-prompt"][data-kind="question"]:not([data-variant="experimental"]) {
-  --v2-question-answer-bg-selected: color-mix(in srgb, var(--v2-border-border-focus) 15%, transparent);
+  --v2-question-answer-bg-selected: var(--v2-background-bg-layer-01);
   --question-feedback-duration: 120ms;
 
   position: relative;
@@ -19,6 +19,7 @@
     gap: 16px;
     flex: 1;
     min-block-size: 0;
+    overflow: clip;
     padding: 8px 12px 12px;
     background-color: var(--v2-background-bg-base);
     border-radius: 10px;
@@ -30,6 +31,7 @@
     flex-direction: column;
     gap: 4px;
     flex-shrink: 0;
+    min-block-size: 0;
     min-inline-size: 0;
   }
 
@@ -71,7 +73,15 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-block-size: 0;
     min-inline-size: 0;
+    max-block-size: max(48px, calc((var(--question-prompt-max-height, 100dvh) - 120px) * 0.45));
+    overflow-y: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
   }
 
   [data-slot="question-text"] {
@@ -85,9 +95,9 @@
   }
 
   [data-slot="question-hint"] {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 440;
-    line-height: var(--line-height-tight);
+    line-height: var(--line-height-base);
     color: var(--v2-text-text-faint);
     overflow-wrap: anywhere;
   }
@@ -166,19 +176,26 @@
   }
 
   [data-slot="question-options"] {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 6px;
     flex: 1 1 auto;
     min-block-size: 0;
     min-inline-size: 0;
-    margin: 0;
-    padding: 0;
+    /* Room for the picked answer's shadow, which the scroll box would clip. */
+    margin: -4px;
+    padding: 4px;
     overflow-y: auto;
     scrollbar-width: none;
 
     &::-webkit-scrollbar {
       display: none;
+    }
+
+    &[inert] {
+      margin: 0;
+      padding: 0;
     }
   }
 
@@ -194,7 +211,7 @@
     padding: 10px;
     border: 0;
     border-radius: 6px;
-    background-color: var(--v2-background-bg-layer-01);
+    background-color: var(--v2-background-bg-base);
     box-shadow: inset 0 0 0 0.5px var(--v2-border-border-base);
     color: var(--v2-text-text-base);
     text-align: start;
@@ -215,7 +232,7 @@
     }
 
     &[data-picked="true"] {
-      box-shadow: none;
+      box-shadow: var(--v2-elevation-raised);
 
       &::before {
         opacity: 1;
@@ -235,6 +252,8 @@
   }
 
   [data-slot="question-option-check"] {
+    -webkit-user-select: none;
+    user-select: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -297,6 +316,8 @@
   }
 
   [data-slot="question-option-main"] {
+    -webkit-user-select: text;
+    user-select: text;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -305,6 +326,8 @@
   }
 
   [data-slot="question-option-shortcut"] {
+    -webkit-user-select: none;
+    user-select: none;
     --keybind-font-size: 10px;
     --keybind-font-weight: var(--font-weight-regular);
     --keybind-transition-duration: var(--question-feedback-duration);
@@ -326,7 +349,7 @@
   [data-slot="option-description"] {
     min-inline-size: 0;
     font-family: var(--v2-font-family-sans);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 440;
     line-height: var(--line-height-tight);
     letter-spacing: 0.05px;
@@ -344,13 +367,7 @@
     padding-inline: 10px;
 
     &[data-editing="true"] .question-custom-field[data-component="text-input-v2"] {
-      background:
-        linear-gradient(180deg, var(--v2-alpha-light-2), var(--v2-alpha-light-0)), var(--v2-background-bg-base);
-      box-shadow: inset 0 0 0 1px var(--v2-border-border-focus);
-
       [data-slot="text-input-v2-input"] {
-        padding-inline: 8px;
-
         &::placeholder {
           color: var(--v2-text-text-faint);
         }
