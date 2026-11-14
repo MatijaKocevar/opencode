@@ -67,6 +67,7 @@ const pluginSupervisor = makeLocationNode({
     FileAccess.node,
     Flag.node,
     Job.node,
+    Location.node,
     Model.node,
     Permission.node,
     PluginHooks.node,
