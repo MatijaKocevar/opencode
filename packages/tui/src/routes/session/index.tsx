@@ -1476,6 +1476,13 @@ export function Session(props: {
     bindings: [...baseAndUnfocusedCommands, ...baseCommands()].map((command) => command.id),
   }))
 
+  // Subagent views keep the composer open, which switches the keymap to composer mode.
+  // The transcript still shows the background hint, so bind it here as well.
+  Keymap.createLayer(() => ({
+    mode: "composer",
+    bindings: ["session.background"],
+  }))
+
   createEffect(
     on(
       () => route.sessionID,
