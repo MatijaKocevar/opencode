@@ -538,9 +538,11 @@ export function Prompt(props: PromptProps) {
         palette: undefined,
         enabled: status() === "running",
         run: () => {
-          if (auto()?.visible) return
-          if (!input.focused) return
-          if (!props.sessionID) return
+          // Return false so an unhandled key falls through to the session route's
+          // unconditional `session.background` command instead of being dropped.
+          if (auto()?.visible) return false
+          if (!input.focused) return false
+          if (!props.sessionID) return false
 
           void client.api.session.background({
             sessionID: props.sessionID,
