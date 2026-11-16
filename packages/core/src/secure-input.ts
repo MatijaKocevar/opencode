@@ -253,21 +253,35 @@ const layer = Layer.effect(
       delete env.SSH_ASKPASS
       delete env.SSH_ASKPASS_REQUIRE
 
-      const pty = yield* spawn(shell, ["-c", input.command], {
-        name: "xterm-256color",
-        cwd: input.cwd,
-        env,
-      })
+      // The PTY belongs to this effect: interrupting the caller stops the command, so a
+      // backgrounded interactive call can still be cancelled like any other shell job.
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const pty = yield* Effect.acquireRelease(
+            spawn(shell, ["-c", input.command], {
+              name: "xterm-256color",
+              cwd: input.cwd,
+              env,
+            }),
+            (pty) =>
+              Effect.sync(() => {
+                try {
+                  pty.kill()
+                } catch {}
+              }),
+          )
 
-      return yield* Effect.promise<{ output: string; exitCode: number | null }>(
-        () =>
-          new Promise<{ output: string; exitCode: number | null }>((resolve) => {
+          return yield* Effect.callback<{ output: string; exitCode: number | null }>((resume) => {
             let output = ""
             let exitCode: number | null = null
             let passwordBuffer = ""
             const redactor = new SecretRedactor()
             let currentEntry: PendingEntry | null = null
             let currentID: SecureInputID | null = null
+            let settled = false
+            let dataDisp: { dispose(): void } | undefined
+            let exitDisp: { dispose(): void } | undefined
+            let timeoutId: ReturnType<typeof setTimeout> | undefined
 
             const endCurrent = (error: CancelledError | TimedOutError) => {
               if (!currentEntry || !currentID) return
@@ -286,7 +300,20 @@ const layer = Layer.effect(
               entry.reject(error)
             }
 
-            const dataDisp = pty.onData((chunk: string) => {
+            const cleanup = () => {
+              if (timeoutId !== undefined) clearTimeout(timeoutId)
+              dataDisp?.dispose()
+              exitDisp?.dispose()
+            }
+
+            const settle = (result: { output: string; exitCode: number | null }) => {
+              if (settled) return
+              settled = true
+              cleanup()
+              resume(Effect.succeed(result))
+            }
+
+            dataDisp = pty.onData((chunk: string) => {
               const visible = redactor.push(chunk)
               output += visible
 
@@ -333,27 +360,29 @@ const layer = Layer.effect(
                 })
             })
 
-            const exitDisp = pty.onExit((event) => {
+            exitDisp = pty.onExit((event) => {
               exitCode = event.exitCode
               redactor.clear()
               endCurrent(new CancelledError())
-              resolve({ output, exitCode })
+              settle({ output, exitCode })
             })
 
-            const timeoutId = setTimeout(() => {
-              if (exitCode === null) {
+            // A timeout of zero means no deadline: backgrounded commands run until they finish.
+            if (timeoutMs > 0) {
+              timeoutId = setTimeout(() => {
+                if (exitCode !== null) return
                 endCurrent(new TimedOutError())
                 pty.kill()
-                resolve({ output, exitCode: null })
-              }
-            }, timeoutMs)
-
-            return () => {
-              clearTimeout(timeoutId)
-              dataDisp.dispose()
-              exitDisp.dispose()
+                settle({ output, exitCode: null })
+              }, timeoutMs)
             }
-          }),
+
+            return Effect.sync(() => {
+              cleanup()
+              endCurrent(new CancelledError())
+            })
+          })
+        }),
       )
     })
 

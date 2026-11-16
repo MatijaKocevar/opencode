@@ -34,6 +34,7 @@ import { Permission } from "@opencode/core/permission"
 import { PermissionSaved } from "@opencode/core/permission/saved"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
+import { SecureInput } from "@opencode/core/secure-input"
 import { Shell } from "@opencode/core/shell"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { ShellResult } from "@opencode/core/shell/result"
@@ -145,6 +146,7 @@ const shellPluginSupervisor = makeLocationNode({
     Permission.node,
     Session.node,
     Job.node,
+    SecureInput.node,
     Shell.node,
     Shell.daemonNode,
     ShellSelect.node,
@@ -2152,6 +2154,51 @@ describe("ShellTool", () => {
           expect((yield* shell.get(id)).status).toBe("running")
           expect((yield* shell.list()).map((info) => info.id)).toContain(id)
           yield* shell.remove(id)
+        }),
+      )
+    }),
+  )
+
+  it.live("backgrounds an interactive command waiting for a secure prompt", () =>
+    withTempDir((tmp) => {
+      reset()
+      return withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const jobs = yield* Job.Service
+          const secure = yield* SecureInput.Service
+          const scope = yield* Scope.Scope
+          const command = "printf 'Password: '; sleep 60"
+          const waiting = yield* executeTool(
+            registry,
+            call({ command, interactive: true, timeout: 60_000 }, "call-secure-background"),
+          ).pipe(Effect.forkIn(scope, { startImmediately: true }))
+
+          // Wait until the PTY printed its prompt and the secure input request is pending.
+          const promptWhenReady = (remaining = 1000): Effect.Effect<boolean> =>
+            Effect.gen(function* () {
+              if ((yield* secure.list()).length > 0) return true
+              if (remaining <= 0) return false
+              yield* Effect.promise(() => Bun.sleep(1))
+              return yield* promptWhenReady(remaining - 1)
+            })
+          expect(yield* promptWhenReady()).toBe(true)
+
+          const backgrounded = yield* jobs.backgroundAll({ sessionID })
+          expect(backgrounded).toMatchObject([{ type: "shell", title: command }])
+          expect(backgrounded[0]?.id).toStartWith("sh_")
+
+          const settled = yield* Fiber.join(waiting)
+          expect(settled.content?.[0]).toEqual({
+            type: "text",
+            text: "Command moved to the background. You will be notified when it finishes.",
+          })
+          expect(settled.metadata).toMatchObject({ status: "running", truncated: false })
+          expect(settled.metadata).not.toHaveProperty("shellID")
+
+          // Cancelling interrupts the PTY and clears the pending prompt.
+          yield* Effect.forEach(backgrounded, (job) => jobs.cancel(job.id), { discard: true })
+          yield* Effect.sleep(Duration.millis(100))
+          expect(yield* secure.list()).toEqual([])
         }),
       )
     }),

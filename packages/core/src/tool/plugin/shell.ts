@@ -4,7 +4,7 @@ import { ToolFailure } from "@opencode/ai/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
-import type { Shell as ShellSchema } from "@opencode/schema/shell"
+import { Shell as ShellSchema } from "@opencode/schema/shell"
 import type { Tool } from "@opencode/schema/tool"
 import { Clock, Deferred, Effect, Fiber, Option, Schema, Struct } from "effect"
 import { Config } from "../../config.js"
@@ -140,6 +140,15 @@ const backgroundResult = (info: ShellSchema.Info, now: number, timeout?: number)
   status: "running" as const,
 })
 
+// The result of a secure-input call the user moved to the background. Its PTY belongs to the
+// interactive execution, so the completion notice carries the output instead of a stream file.
+const secureBackgroundResult = (started: number, now: number) => ({
+  output: "Command moved to the background. You will be notified when it finishes.",
+  wallTimeSeconds: Math.max(0, now - started) / 1_000,
+  truncated: false,
+  status: "running" as const,
+})
+
 // Tells the session how a background command ended, once its job settles.
 const notify = Effect.fnUntraced(function* (
   sessions: Pick<Session.Interface, "synthetic">,
@@ -173,6 +182,42 @@ const notify = Effect.fnUntraced(function* (
     })
     .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.void))
   if (info.notificationID) yield* jobs.completeBackground(info.notificationID)
+})
+
+// Tells the session how a backgrounded secure-input command ended. Its job has no Shell entry
+// (the PTY belongs to the interactive execution), so the output travels in the notice itself.
+const notifySecure = Effect.fnUntraced(function* (
+  sessions: Pick<Session.Interface, "synthetic">,
+  jobs: Job.Interface,
+  input: {
+    readonly sessionID: SessionSchema.ID
+    readonly id: string
+    readonly command: string
+    readonly settled: Deferred.Deferred<Output>
+  },
+) {
+  const info = (yield* jobs.wait({ id: input.id })).info
+  if (!info || info.status === "running") return
+  const output = info.status === "completed" ? yield* Deferred.await(input.settled) : undefined
+  const text = output
+    ? resultMessages(output).join("\n\n")
+    : info.status === "error"
+      ? (info.error ?? "Command failed")
+      : "Cancelled"
+  yield* sessions
+    .synthetic({
+      sessionID: input.sessionID,
+      description: input.command,
+      ...ShellResult.notification({
+        jobID: input.id,
+        shellID: input.id,
+        command: input.command,
+        state: info.status,
+        text,
+        output: output ? { output: output.output, truncated: false, exit: output.exit } : undefined,
+      }),
+    })
+    .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.void))
 })
 
 // The job that waits on a command for its call (or its session, once backgrounded).
@@ -388,24 +433,74 @@ export const Plugin = {
                   invocation.env.OPENCODE_SESSION_ID = context.sessionID
                   const finalTimeout = yield* prepare(invocation, context)
                   const started = yield* Clock.currentTimeMillis
-                  const result = yield* secureInput.value.execute({
-                    command: input.command,
-                    cwd: invocation.cwd,
-                    env: invocation.env as Record<string, string>,
-                    sessionID: context.sessionID,
-                    timeout: finalTimeout,
+                  const id = ShellSchema.ID.create()
+                  const settled = yield* Deferred.make<Output>()
+                  const job = yield* jobs.start({
+                    id,
+                    type: name,
+                    title: input.command,
+                    metadata: { sessionID: context.sessionID, shellID: id },
+                    run: Effect.gen(function* () {
+                      const result = yield* secureInput.value.execute({
+                        command: input.command,
+                        cwd: invocation.cwd,
+                        env: invocation.env as Record<string, string>,
+                        sessionID: context.sessionID,
+                        // The call's deadline is enforced by the job below, which moves the
+                        // command to the background instead of killing its prompt.
+                        timeout: 0,
+                      })
+                      const finished = yield* Clock.currentTimeMillis
+                      const output: Output = {
+                        output: result.output ?? "",
+                        exit: result.exitCode ?? undefined,
+                        status: "completed",
+                        truncated: false,
+                        wallTimeSeconds: Math.max(0, finished - started) / 1_000,
+                      }
+                      yield* Deferred.succeed(settled, output)
+                      return resultMessages(output).join("\n\n")
+                    }),
                   })
-                  const finished = yield* Clock.currentTimeMillis
-                  return toolResult(
-                    {
-                      output: result.output ?? "",
-                      exit: result.exitCode ?? undefined,
-                      status: "completed" as const,
-                      truncated: false,
-                      wallTimeSeconds: Math.max(0, finished - started) / 1_000,
-                    },
-                    finalTimeout,
-                  )
+                  const notify = () =>
+                    shell.watch(
+                      notifySecure(sessions, jobs, {
+                        sessionID: context.sessionID,
+                        id: job.id,
+                        command: input.command,
+                        settled,
+                      }),
+                    )
+                  if (input.background === true) {
+                    yield* jobs.background(job.id)
+                    yield* notify()
+                    return toolResult(secureBackgroundResult(started, yield* Clock.currentTimeMillis))
+                  }
+                  const waiting = jobs.block({ id: job.id, sessionID: context.sessionID })
+                  const blocked =
+                    finalTimeout > 0
+                      ? waiting.pipe(
+                          Effect.timeoutOption(finalTimeout),
+                          Effect.flatMap((result) =>
+                            Option.isSome(result)
+                              ? Effect.succeed(result.value)
+                              : jobs
+                                  .background(job.id)
+                                  .pipe(
+                                    Effect.map((info) => (info ? { type: "backgrounded" as const, info } : undefined)),
+                                  ),
+                          ),
+                        )
+                      : waiting
+                  const outcome = yield* blocked.pipe(Effect.onInterrupt(() => jobs.cancel(job.id).pipe(Effect.ignore)))
+                  if (outcome?.type === "backgrounded") {
+                    yield* notify()
+                    return toolResult(secureBackgroundResult(started, yield* Clock.currentTimeMillis))
+                  }
+                  if (outcome?.info.status === "error")
+                    return yield* Effect.fail(new Error(outcome.info.error ?? "Command failed"))
+                  if (outcome?.info.status === "cancelled") return yield* Effect.fail(new Error("Command cancelled"))
+                  return toolResult(yield* Deferred.await(settled), finalTimeout)
                 }
               }
               // A foreground timeout of 0 falls back to the default, so a call can't block until the command exits.
