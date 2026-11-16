@@ -247,10 +247,16 @@ const layer = Layer.effect(
       const context = yield* Effect.context()
       const runFork = Effect.runForkWith(context)
 
+      // An inherited desktop askpass (ksshaskpass with SSH_ASKPASS_REQUIRE=prefer) answers ssh in
+      // its own window, so the PTY never prints "Password:" and the in-app prompt never appears.
+      const env: Record<string, string> = { ...input.env, TERM: "xterm-256color" }
+      delete env.SSH_ASKPASS
+      delete env.SSH_ASKPASS_REQUIRE
+
       const pty = yield* spawn(shell, ["-c", input.command], {
         name: "xterm-256color",
         cwd: input.cwd,
-        env: { ...input.env, TERM: "xterm-256color" } as Record<string, string>,
+        env,
       })
 
       return yield* Effect.promise<{ output: string; exitCode: number | null }>(
